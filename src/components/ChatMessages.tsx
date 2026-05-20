@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import { paymentLinks as defaultPaymentLinks, planOptions } from '@/lib/chat'
 import { audioFiles } from '@/lib/audio'
 import { getSecureItem, setSecureItem } from '@/lib/secure-storage'
-import type { ChatMessage, PlanType, PaymentTarget, AudioKey, ClientActivityType, PaymentProvider } from '@/types/chat'
+import type { ChatMessage, PlanType, PaymentTarget, AudioKey, ClientActivityType, PaymentProvider, DeviceType } from '@/types/chat'
 
 function formatTime(message: ChatMessage) {
   const date = message.createdAt?.toDate?.()
@@ -566,23 +566,53 @@ const gamePlanVisuals: Record<
 
 const gameTrustItems = ['Ant-ban', 'Ant-blacklist', 'Suporte', 'Atualizacoes']
 
-function getPosterPlanItems(pluginIncluded: boolean) {
-  return [
+type PosterPlanItem =
+  | { label: string; action: 'features' }
+  | { label: string; detail?: string; tone?: 'positive' | 'negative' }
+
+function getPosterPlanItems(
+  pluginIncluded: boolean,
+  selectedDevice: DeviceType | '' | undefined,
+  paidPlan: PlanType | '' | undefined,
+  plan: PlanType,
+): PosterPlanItem[] {
+  const pluginLooksIncluded = selectedDevice === 'ios' ? true : pluginIncluded
+  const items: PosterPlanItem[] = [
     { label: `Mais de ${planFeatureDisplayCount} funcoes`, action: 'features' },
     { label: 'Ant-ban e ant-blacklist' },
     { label: 'Atualizacoes semanais gratuitas' },
     { label: 'Suporte prioritario' },
     {
-      label: pluginIncluded ? 'Plugin Service Sync incluso' : 'Plugin Service Sync nao incluso',
-      detail: pluginIncluded
+      label: pluginLooksIncluded ? 'Plugin Service Sync incluso' : 'Plugin Service Sync nao incluso',
+      detail: pluginLooksIncluded
         ? ''
         : 'O xit so funciona com plugin. Verifique com o vendedor detalhes desse plugin; nao fazemos reembolso relacionado a plugin.',
-      tone: pluginIncluded ? 'positive' : 'negative',
+      tone: pluginLooksIncluded ? 'positive' : 'negative',
     },
     { label: 'Tutorial de instalacao e uso' },
     { label: 'Recebimento automatico apos mandar comprovante' },
     { label: 'Mais controle para jogar apostado' },
-  ] as const
+  ]
+
+  if (selectedDevice === 'ios' && paidPlan !== 'lifetime') {
+    const shouldWarnWeekly = plan === 'weekly'
+    const shouldWarnMonthlyAfterPurchase = plan === 'monthly' && paidPlan === 'monthly'
+    const hasPaidPlan = paidPlan === 'weekly' || paidPlan === 'monthly'
+
+    if (shouldWarnWeekly || shouldWarnMonthlyAfterPurchase) {
+      items.splice(4, 0, {
+        label: 'Este plano nao funciona para iOS',
+        detail: hasPaidPlan
+          ? 'Para esta conta iOS, o plano Permanente e o unico que libera o uso completo. Adquira o Permanente e fale no chat para receber o reembolso do plano anterior.'
+          : plan === 'weekly'
+            ? 'Para iOS, escolha Mensal ou Permanente antes de pagar.'
+            : 'Para iOS, use o plano Permanente para liberar tudo sem erro.',
+        tone: 'negative',
+      })
+    }
+  }
+
+  return items
 }
 
 const planDealMap: Record<
@@ -668,6 +698,8 @@ export function ChatMessages({
   paymentLinks,
   pluginPaymentLink,
   paymentProvider,
+  selectedDevice,
+  paidPlan,
 }: {
   messages: ChatMessage[]
   perspective: 'client' | 'admin'
@@ -678,6 +710,8 @@ export function ChatMessages({
   paymentLinks?: Record<PlanType, string>
   pluginPaymentLink?: string
   paymentProvider?: PaymentProvider
+  selectedDevice?: DeviceType | ''
+  paidPlan?: PlanType | ''
   onPlanSelect?: (plan: PlanType) => void
   onPaymentClick?: (payment: { plan?: PaymentTarget; link: string; label: string; provider?: PaymentProvider }) => void
   onButtonClick?: (click: { messageId: string; buttonKey: string; buttonLabel: string }) => void
@@ -720,9 +754,124 @@ export function ChatMessages({
   )
   const topFeatures = allFeatures.slice(0, 10)
   const recentPurchase = recentPurchaseProofs[recentPurchaseIndex % recentPurchaseProofs.length]
-  const posterPlanItems = useMemo(() => getPosterPlanItems(pluginIncluded !== false), [pluginIncluded])
   const activePaymentLinks = paymentLinks || defaultPaymentLinks
   const activePluginPaymentLink = pluginPaymentLink || ''
+
+  const renderPluginPurchaseModal = useCallback(
+    (message: ChatMessage, pluginLink: string) => {
+      if (openPluginMessageId !== message.id) return null
+
+      return (
+        <div className="plugin-fullscreen" role="dialog" aria-modal="true" aria-label="Plugin ServiceSync Core">
+          <section className="plugin-sheet">
+            <header className="plugin-sheet-head">
+              <div>
+                <span>Ativacao final</span>
+                <h3>ServiceSync Core</h3>
+                <small>6 de 7 modulos validados</small>
+              </div>
+              <button type="button" onClick={() => setOpenPluginMessageId(null)} aria-label="Fechar plugin">
+                X
+              </button>
+            </header>
+
+            <div className="plugin-hero-copy">
+              <div className="plugin-progress-head">
+                <span>Semanal -&gt; Permanente</span>
+                <strong>quase pronto</strong>
+              </div>
+              <div className="plugin-progress-bar" aria-hidden="true">
+                <i />
+              </div>
+              <h4>Sua conta esta a 1 modulo de liberar tudo.</h4>
+              <p>
+                O ServiceSync Core finaliza a sincronizacao tecnica da conta. Depois da confirmacao,
+                todas as funcoes do xit ficam liberadas, o acesso vira permanente e voce ja consegue jogar.
+              </p>
+            </div>
+
+            <div className="plugin-activation-strip" aria-label="Resultado da ativacao">
+              <span>
+                <b>✓</b>
+                Todas as funcoes
+              </span>
+              <span>
+                <b>✓</b>
+                Pronto para jogar
+              </span>
+              <span>
+                <b>✓</b>
+                Uso vitalicio
+              </span>
+            </div>
+
+            <div className="plugin-pending-card" aria-label="Modulo pendente">
+              <b aria-hidden="true">×</b>
+              <div>
+                <span>Modulo pendente</span>
+                <strong>ServiceSync Core</strong>
+                <p>Responsavel por fechar a ativacao, liberar todas as funcoes e evitar erro de sincronizacao ao abrir o xit.</p>
+              </div>
+            </div>
+
+            <div className="plugin-module-section" aria-label="Plugins verificados">
+              <span>Ja validado no painel</span>
+              <div className="plugin-module-grid">
+                {pluginModules
+                  .filter((plugin) => plugin !== 'ServiceSync Core')
+                  .map((plugin, index) => (
+                    <span key={plugin} className="ready">
+                      <b>✓</b>
+                      <em>{index + 1}</em>
+                      <strong>{plugin}</strong>
+                      <small>validado</small>
+                    </span>
+                  ))}
+              </div>
+            </div>
+
+            <div className="plugin-final-note">
+              <strong>Depois de ativar:</strong>
+              <span>o xit fica completo, permanente e com atualizacao gratuita.</span>
+            </div>
+
+            <div className="plugin-offer-panel" aria-label="Oferta do plugin">
+              <div>
+                <span>Ativacao unica</span>
+                <strong>R$ 79,90</strong>
+                <small>sem mensalidade depois do plugin</small>
+              </div>
+              <p>
+                Ao confirmar, o ServiceSync Core libera o modulo final, deixa sua conta permanente e mantem todas as funcoes disponiveis para jogar.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="plugin-buy-button"
+              onClick={() => {
+                onButtonClick?.({
+                  messageId: message.id,
+                  buttonKey: 'buy_plugin',
+                  buttonLabel: 'Adquirir plugin',
+                })
+                onPaymentClick?.({
+                  plan: 'plugin',
+                  link: pluginLink,
+                  label: 'Adquirir plugin',
+                  provider: paymentProvider,
+                })
+              }}
+              disabled={!onPaymentClick || savingPlan || !pluginLink}
+            >
+              adquirir plugin por R$ 79,90
+            </button>
+          </section>
+        </div>
+      )
+    },
+    [onButtonClick, onPaymentClick, openPluginMessageId, paymentProvider, savingPlan],
+  )
 
   const canManageMessage = useCallback(
     (message: ChatMessage) =>
@@ -1017,6 +1166,12 @@ export function ChatMessages({
                               const visual = gamePlanVisuals[option.value]
                               const deal = planDealMap[option.value]
                               const social = planSocialStats[option.value]
+                              const posterPlanItems = getPosterPlanItems(
+                                pluginIncluded !== false,
+                                selectedDevice,
+                                paidPlan,
+                                option.value,
+                              )
                               const [priceMain, priceCents = '00'] = option.priceLabel.replace('R$ ', '').split(',')
                               const buyButtonKey = `buy_${option.value}`
                               const paymentLink = activePaymentLinks[option.value]
@@ -1337,6 +1492,51 @@ export function ChatMessages({
           )
         }
 
+        if (message.kind === 'app_download_link' && message.downloadLink) {
+          const versionLabel = message.appVersionName || '1.0'
+          const appName = message.appName || 'XitDuGordin'
+
+          return (
+            <article
+              key={message.id}
+              className={`message-bubble ${message.sender} ${isOwn ? 'own' : 'other'} app-download-message`}
+            >
+              <div className="message-header">
+                <MessageIcon sender={message.sender} />
+                <span className="message-time">{formatTime(message)}</span>
+                {renderAdminMessageTools(message)}
+              </div>
+              <section className="app-download-card" aria-label="Download do app">
+                <div className="app-download-top">
+                  <span>Download liberado</span>
+                  <strong>v{versionLabel}</strong>
+                </div>
+                <div className="app-download-title">
+                  <h3>{message.text || 'Aqui esta o seu xit, meu mano.'}</h3>
+                  <p>
+                    {appName} pronto para baixar. Abra o link, instale o APK e entre com o mesmo usuario e senha do chat privado.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="app-download-button"
+                  onClick={() => {
+                    onButtonClick?.({
+                      messageId: message.id,
+                      buttonKey: 'download_app',
+                      buttonLabel: 'ABAIXAR',
+                    })
+                    window.open(message.downloadLink, '_blank', 'noopener,noreferrer')
+                  }}
+                >
+                  <ClientClickBadge message={message} buttonKey="download_app" perspective={perspective} />
+                  ABAIXAR
+                </button>
+              </section>
+            </article>
+          )
+        }
+
         if (message.kind === 'plugin_diagnostic') {
           const pluginLink = activePluginPaymentLink
           const username = message.text || 'sua conta'
@@ -1355,7 +1555,20 @@ export function ChatMessages({
               <section className="plugin-diagnostic-card" aria-label="Diagnóstico técnico do plugin">
                 <div className="plugin-diagnostic-top">
                   <span>Diagnóstico técnico da conta</span>
-                  <strong>ServiceSync pendente</strong>
+                  <button
+                    type="button"
+                    className="plugin-diagnostic-status-button"
+                    onClick={() => {
+                      onButtonClick?.({
+                        messageId: message.id,
+                        buttonKey: 'open_plugin_from_status',
+                        buttonLabel: 'ServiceSync pendente',
+                      })
+                      setOpenPluginMessageId(message.id)
+                    }}
+                  >
+                    ServiceSync pendente
+                  </button>
                 </div>
 
                 <div className="plugin-diagnostic-title">
@@ -1410,20 +1623,16 @@ export function ChatMessages({
                   onClick={() => {
                     onButtonClick?.({
                       messageId: message.id,
-                      buttonKey: 'buy_plugin_diagnostic',
+                      buttonKey: 'open_plugin_diagnostic',
                       buttonLabel: 'Adquirir plugin',
                     })
-                    onPaymentClick?.({
-                      plan: 'plugin',
-                      link: pluginLink,
-                      label: 'Adquirir plugin',
-                      provider: paymentProvider,
-                    })
+                    setOpenPluginMessageId(message.id)
                   }}
-                  disabled={!onPaymentClick || savingPlan || !pluginLink}
+                  disabled={!pluginLink}
                 >
                   adquirir plugin
                 </button>
+                {renderPluginPurchaseModal(message, pluginLink)}
               </section>
             </article>
           )
@@ -1459,7 +1668,8 @@ export function ChatMessages({
                 adquirir plugin
               </button>
 
-              {openPluginMessageId === message.id && (
+              {renderPluginPurchaseModal(message, pluginLink)}
+              {false && openPluginMessageId === message.id && (
                 <div className="plugin-fullscreen" role="dialog" aria-modal="true" aria-label="Plugin ServiceSync Core">
                   <section className="plugin-sheet">
                     <header className="plugin-sheet-head">

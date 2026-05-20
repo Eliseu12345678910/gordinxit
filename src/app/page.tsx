@@ -603,6 +603,12 @@ export default function ClientChatPage() {
 
   const selectedDeviceOption = deviceOptions.find((option) => option.value === selectedDevice)
   const presentationDeviceOption = deviceOptions.find((option) => option.value === presentationDevice)
+  const paidPlan =
+    chatMeta?.payment?.status === 'paid' && chatMeta.payment.plan && chatMeta.payment.plan !== 'plugin'
+      ? chatMeta.payment.plan
+      : chatMeta?.subscription?.status === 'active' && chatMeta.subscription.plan
+        ? chatMeta.subscription.plan
+        : ''
   const visibleMessages = arrangeMessagesWithSimulatedAudio(
     messages,
     presentationDeviceOption?.value,
@@ -1236,6 +1242,8 @@ export default function ClientChatPage() {
               paymentLinks={activePaymentLinks}
               pluginPaymentLink={activePluginPaymentLink}
               paymentProvider={paymentProvider}
+              selectedDevice={(selectedDevice || chatMeta?.leadProfile?.device || '') as DeviceType | ''}
+              paidPlan={paidPlan}
               onPlanSelect={handlePlanSelect}
               onPaymentClick={handlePaymentClick}
               onButtonClick={handleButtonClick}

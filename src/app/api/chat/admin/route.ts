@@ -100,6 +100,16 @@ async function getPaymentSettings(adminDb: ReturnType<typeof getAdminDb>) {
   }
 }
 
+async function getAppUpdateSettings(adminDb: ReturnType<typeof getAdminDb>) {
+  const settingsSnapshot = await adminDb.collection('settings').doc('app-update').get()
+  const settings = settingsSnapshot.data() || {}
+
+  return {
+    latestVersionName: String(settings.latestVersionName || '1.0').trim(),
+    apkUrl: String(settings.apkUrl || '').trim(),
+  }
+}
+
 function addPaymentTrackingToLink(
   link: string,
   chatId: string,
@@ -444,6 +454,41 @@ export async function POST(request: NextRequest) {
       await chatRef.set(
         {
           lastMessage: 'Diagnostico tecnico do plugin enviado.',
+          lastSender: 'admin',
+          lastMessageAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      return NextResponse.json({ ok: true })
+    }
+
+    if (action === 'send_app_download_link') {
+      const username = String(chat?.accessUsername || chat?.usernameKey || accountId || 'mano')
+      const appSettings = await getAppUpdateSettings(adminDb)
+
+      if (!appSettings.apkUrl) {
+        return NextResponse.json(
+          { error: 'Cadastre o link do APK na atualizacao do app antes de enviar o botao.' },
+          { status: 400 },
+        )
+      }
+
+      await adminDb.collection('chats').doc(chatId).collection('messages').add({
+        sender: 'admin',
+        kind: 'app_download_link',
+        text: `Aqui esta o seu xit, meu mano ${username}.`,
+        downloadLabel: 'ABAIXAR',
+        downloadLink: appSettings.apkUrl,
+        appVersionName: appSettings.latestVersionName,
+        appName: 'XitDuGordin',
+        createdAt: FieldValue.serverTimestamp(),
+      })
+
+      await chatRef.set(
+        {
+          lastMessage: 'Download do app enviado.',
           lastSender: 'admin',
           lastMessageAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),

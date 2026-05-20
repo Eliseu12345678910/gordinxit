@@ -164,6 +164,12 @@ function getPluginExplanation(chat: Chat) {
   return `${username}, conferi o painel técnico da sua conta e o diagnóstico ficou assim:\n\nStatus dos módulos:\n\n[v] License Bridge\n[v] Device Binder\n[v] Profile Cache\n[v] Overlay Runtime\n[v] Policy Sync Agent\n[v] Frame Stabilizer\n[x] ServiceSync Core\n\nO único módulo que ainda falta é o ServiceSync Core. Ele é o plugin que fecha a comunicação entre a sua conta, o painel e o xit.\n\nSem esse plugin, o acesso pode até aparecer como liberado, mas o xit não roda completo e pode dar erro na hora de abrir, sincronizar ou entrar para jogar.\n\nCom o ServiceSync Core ativo:\n\n[v] o xit funciona completo\n[v] reduz erro de ativação e sincronização\n[v] você consegue jogar assim que o plugin for confirmado\n[v] sua conta muda de Semanal -> Permanente\n[v] você fica com uso vitalício e atualizações gratuitas para sempre\n\nA gente deixou avisado antes da compra que, quando o plugin não está incluso, ele é necessário para o xit funcionar corretamente.\n\nSe quiser, eu te mando o botão do plugin agora e já deixo sua conta pronta para jogar.`
 }
 
+function getAppInstallGuide(chat: Chat) {
+  const username = chat.accessUsername || chat.usernameKey || 'mano'
+
+  return `${username}, segue o passo a passo simples para instalar e usar:\n\n1. Clique em ABAIXAR e espere o APK terminar de baixar.\n2. Abra o arquivo baixado no celular.\n3. Se aparecer aviso do Android, toque em Configurações e permita instalar app desta fonte.\n4. Conclua a instalação e abra o XitDuGordin.\n5. Entre com o mesmo usuário e senha que você usa aqui no chat privado.\n6. Depois do login, confira se o plano aparece ativo e toque nas funções que quiser usar.\n\nSe aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funções.`
+}
+
 type AppUpdateDraft = {
   enabled: boolean
   required: boolean
@@ -530,6 +536,12 @@ export default function AdminPage() {
     () => (selectedChat ? [...makeAdminPresentationMessages(selectedChat), ...messages] : messages),
     [messages, selectedChat],
   )
+  const selectedChatPaidPlan =
+    selectedChat?.payment?.status === 'paid' && selectedChat.payment.plan && selectedChat.payment.plan !== 'plugin'
+      ? selectedChat.payment.plan
+      : selectedChat?.subscription?.status === 'active' && selectedChat.subscription.plan
+        ? selectedChat.subscription.plan
+        : ''
   const unreadChatIds = useMemo(() => {
     const unread = new Set<string>()
 
@@ -864,6 +876,7 @@ export default function AdminPage() {
       | 'send_payment_link'
       | 'send_plugin_payment_link'
       | 'send_plugin_diagnostic'
+      | 'send_app_download_link'
       | 'send_plans'
       | 'deactivate_plan'
       | 'activate_plugin'
@@ -916,6 +929,17 @@ export default function AdminPage() {
             runAdminAction('send_plugin_payment_link', {
               paymentLink: activePluginPaymentLink,
             }),
+        },
+        {
+          id: 'app-download',
+          label: 'bt baixar xit',
+          onSend: () => runAdminAction('send_app_download_link'),
+        },
+        {
+          id: 'app-install-guide',
+          label: 'como instalar',
+          message: getAppInstallGuide(selectedChat),
+          onSend: (message?: string) => handleSend(message || getAppInstallGuide(selectedChat)),
         },
         ...planOptions.map((plan) => ({
           id: `payment-${plan.value}`,
@@ -1193,6 +1217,8 @@ export default function AdminPage() {
               paymentLinks={activePaymentLinks}
               pluginPaymentLink={activePluginPaymentLink}
               paymentProvider={paymentProvider}
+              selectedDevice={selectedChat.leadProfile?.device || ''}
+              paidPlan={selectedChatPaidPlan}
               onEditMessage={handleEditMessage}
               onDeleteMessage={handleDeleteMessage}
             />

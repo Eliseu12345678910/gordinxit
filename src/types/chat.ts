@@ -148,11 +148,16 @@ export type ChatMessage = {
     | 'recording_indicator'
     | 'plugin_payment_link'
     | 'plugin_diagnostic'
+    | 'app_download_link'
   audioKey?: AudioKey
   videoUrl?: string
   paymentLink?: string
   paymentLabel?: string
   paymentPlan?: PaymentTarget
+  downloadLink?: string
+  downloadLabel?: string
+  appVersionName?: string
+  appName?: string
   editedAt?: Timestamp
   editedBy?: string
   buttonClicks?: Record<

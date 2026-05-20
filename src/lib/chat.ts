@@ -619,6 +619,7 @@ export async function updateChatFunnel({
     | 'send_payment_link'
     | 'send_plugin_payment_link'
     | 'send_plugin_diagnostic'
+    | 'send_app_download_link'
     | 'send_plans'
     | 'deactivate_plan'
     | 'activate_plugin'
