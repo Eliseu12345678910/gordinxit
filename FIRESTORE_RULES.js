@@ -2,84 +2,116 @@
 // Publish these in Firebase Console > Firestore Database > Rules.
 
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
       return request.auth != null;
     }
 
-    function isAdmin() {
+    function isAdminEmail() {
+      return signedIn()
+        && request.auth.token.email == "admin99193816@admin.com";
+    }
+
+    function isAdminDoc() {
       return signedIn()
         && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isAdmin == true;
     }
 
-    function isChatParticipant(chatId) {
+    function isAdmin() {
+      return isAdminEmail() || isAdminDoc();
+    }
+
+    function chatPath(chatId) {
+      return /databases/$(database)/documents/chats/$(chatId);
+    }
+
+    function chatNotBlocked(chat) {
+      return (!("accessBlocked" in chat) || chat.accessBlocked != true)
+        && (!("accountBlock" in chat) || chat.accountBlock.active != true);
+    }
+
+    function isParticipant(chatId) {
       return signedIn()
-        && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantUids;
+        && exists(chatPath(chatId))
+        && ("participantUids" in get(chatPath(chatId)).data)
+        && get(chatPath(chatId)).data.participantUids.hasAny([request.auth.uid])
+        && chatNotBlocked(get(chatPath(chatId)).data);
+    }
+
+    function validClientChatUpdate(chatId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return isParticipant(chatId)
+        && changed.hasOnly([
+          "lastMessage",
+          "lastSender",
+          "lastMessageAt",
+          "updatedAt"
+        ])
+        && request.resource.data.lastSender == "client"
+        && request.resource.data.lastMessage is string
+        && request.resource.data.lastMessage.size() > 0
+        && request.resource.data.lastMessage.size() <= 2000;
+    }
+
+    function validClientMessage(chatId) {
+      return isParticipant(chatId)
+        && request.resource.data.keys().hasOnly(["text", "sender", "createdAt"])
+        && request.resource.data.sender == "client"
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 2000;
+    }
+
+    match /admins/{adminId} {
+      allow get, list: if isAdmin() || (signedIn() && request.auth.uid == adminId);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /accounts/{accountId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /kiwifyEvents/{eventId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /perfectPayEvents/{eventId} {
+      allow read, write: if isAdmin();
     }
 
     match /chats/{chatId} {
-      // Chat creation and account fields are handled by the Next.js API with Firebase Admin.
+      allow get: if isAdmin() || isParticipant(chatId);
+      allow list: if isAdmin();
       allow create: if false;
-
-      // Admins see all chats. Participants can read their own chat metadata,
-      // including Firebase timestamps used by the client UI.
-      allow read: if isAdmin() || isChatParticipant(chatId);
-
-      // Participants can update only operational fields used by the client UI.
-      allow update: if isAdmin()
-        || (
-          isChatParticipant(chatId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'answers',
-            'automationComplete',
-            'lastMessage',
-            'lastSender',
-            'status',
-            'updatedAt'
-          ])
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'accessUsername',
-            'usernameKey',
-            'passwordHash',
-            'passwordSalt',
-            'ownerUid',
-            'participantUids'
-          ])
-        );
-
+      allow update: if isAdmin() || validClientChatUpdate(chatId);
       allow delete: if isAdmin();
 
       match /messages/{messageId} {
-        allow read: if isAdmin() || isChatParticipant(chatId);
-
-        allow create: if isAdmin()
-          || (
-            isChatParticipant(chatId)
-            && request.resource.data.sender == 'client'
-            && request.resource.data.text is string
-            && request.resource.data.text.size() > 0
-            && request.resource.data.text.size() <= 2000
-          );
-
+        allow get, list: if isAdmin() || isParticipant(chatId);
+        allow create: if isAdmin() || validClientMessage(chatId);
         allow update, delete: if isAdmin();
       }
 
       match /activity/{activityId} {
-        allow read: if isAdmin();
+        allow get, list: if isAdmin();
         allow create, update, delete: if false;
+      }
+
+      match /{subdocument=**} {
+        allow read, write: if isAdmin();
       }
     }
 
-    match /admins/{userId} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin();
-    }
-
-    match /accounts/{accountId} {
-      // Contains credentials and app/profile fields. Keep access server-side or admin-only.
-      allow read, write: if isAdmin();
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
