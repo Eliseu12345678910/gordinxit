@@ -1015,10 +1015,25 @@ export default function ClientChatPage() {
     setOpeningPayment(true)
     setError('')
 
+    let paymentWindow: Window | null = null
+
     try {
       const previousPlan = selectedPlan
       const providerForClick = provider || paymentProvider
       const trackedPaymentLink = addPaymentTrackingToLink(link, chatId, plan, providerForClick)
+
+      paymentWindow = window.open('', '_blank')
+      if (paymentWindow) {
+        try {
+          paymentWindow.opener = null
+          paymentWindow.document.title = 'Abrindo pagamento'
+          paymentWindow.document.body.innerHTML =
+            '<main style="min-height:100vh;display:grid;place-items:center;background:#09090b;color:#fff;font-family:Arial,sans-serif;text-align:center"><div><div style="width:44px;height:44px;border:4px solid rgba(255,255,255,.2);border-top-color:#22c55e;border-radius:999px;margin:0 auto 16px;animation:spin .8s linear infinite"></div><strong>Aguarde...</strong><p style="color:#cbd5e1;margin:8px 0 0">Levando voce ate a pagina de pagamento.</p><style>@keyframes spin{to{transform:rotate(360deg)}}</style></div></main>'
+        } catch {
+          // Some browsers restrict writing into the temporary payment tab.
+        }
+      }
+
       await registerPaymentClick({
         chatId,
         accountId,
@@ -1033,15 +1048,24 @@ export default function ClientChatPage() {
         setSelectedPlan(plan)
       }
 
-      window.open(trackedPaymentLink, '_blank', 'noopener,noreferrer')
+      if (paymentWindow && !paymentWindow.closed) {
+        paymentWindow.location.replace(trackedPaymentLink)
+      } else {
+        window.location.assign(trackedPaymentLink)
+      }
 
       if (plan && plan !== 'plugin' && previousPlan !== plan) {
         const selectedOption = planOptions.find((option) => option.value === plan)
         if (selectedOption) {
-          await addMessage(chatId, 'client', `Escolhi o plano ${selectedOption.label}.`)
+          addMessage(chatId, 'client', `Escolhi o plano ${selectedOption.label}.`).catch((messageError) => {
+            console.error('Nao foi possivel registrar escolha do plano:', messageError)
+          })
         }
       }
     } catch (paymentError) {
+      if (paymentWindow && !paymentWindow.closed) {
+        paymentWindow.close()
+      }
       setError(
         paymentError instanceof Error
           ? paymentError.message
