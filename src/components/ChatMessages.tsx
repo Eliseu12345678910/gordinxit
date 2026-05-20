@@ -594,19 +594,17 @@ function getPosterPlanItems(
     { label: 'Mais controle para jogar apostado' },
   ]
 
-  if (selectedDevice === 'ios' && paidPlan !== 'lifetime') {
-    const shouldWarnWeekly = plan === 'weekly'
-    const shouldWarnMonthlyAfterPurchase = plan === 'monthly' && paidPlan === 'monthly'
-    const hasPaidPlan = paidPlan === 'weekly' || paidPlan === 'monthly'
+  if (selectedDevice === 'ios') {
+    const shouldWarnWeeklyAfterPurchase = paidPlan === 'weekly' && plan === 'weekly'
+    const shouldWarnMonthlyAfterPurchase =
+      paidPlan === 'monthly' && (plan === 'weekly' || plan === 'monthly')
 
-    if (shouldWarnWeekly || shouldWarnMonthlyAfterPurchase) {
+    if (shouldWarnWeeklyAfterPurchase || shouldWarnMonthlyAfterPurchase) {
       items.splice(4, 0, {
         label: 'Este plano nao funciona para iOS',
-        detail: hasPaidPlan
-          ? 'Para esta conta iOS, o plano Permanente e o unico que libera o uso completo. Adquira o Permanente e fale no chat para receber o reembolso do plano anterior.'
-          : plan === 'weekly'
-            ? 'Para iOS, escolha Mensal ou Permanente antes de pagar.'
-            : 'Para iOS, use o plano Permanente para liberar tudo sem erro.',
+        detail: paidPlan === 'weekly'
+          ? 'Seu plano Semanal ja foi identificado. Para usar no iOS, pegue o Mensal ou Permanente e fale no chat para ajustar o reembolso do Semanal.'
+          : 'Seu plano Mensal ja foi identificado. Para esta conta iOS, o Permanente e o plano que libera o uso completo; pegue o Permanente e fale no chat para ajustar o reembolso do Mensal.',
         tone: 'negative',
       })
     }

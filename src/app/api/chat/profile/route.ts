@@ -240,6 +240,12 @@ export async function POST(request: NextRequest) {
       const deviceLabel = deviceLabels[device]
       const previousDevice = String(chat?.leadProfile?.device || '')
       const previousLabel = isDevice(previousDevice) ? deviceLabels[previousDevice] : ''
+      if (previousLabel && previousDevice !== device) {
+        return NextResponse.json(
+          { error: 'Dispositivo ja definido. Para alterar, fale com o atendimento.' },
+          { status: 409 },
+        )
+      }
       const changedDevice = Boolean(previousLabel && previousDevice !== device)
 
       accountUpdate.profile = {

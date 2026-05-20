@@ -1,7 +1,6 @@
 'use client'
 
 import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { signOut } from 'firebase/auth'
 import { Timestamp } from 'firebase/firestore'
 import { ChatMessages } from '@/components/ChatMessages'
 import { MessageComposer } from '@/components/MessageComposer'
@@ -13,7 +12,6 @@ import {
   addPaymentTrackingToLink,
   ChatAccessError,
   checkClientSessionAccess,
-  clearClientSession,
   deviceOptions,
   ensureAnonymousSession,
   getPluginPaymentLink,
@@ -42,8 +40,7 @@ import {
   storePlan,
   storeUsername,
 } from '@/lib/chat'
-import { auth } from '@/lib/firebase'
-import { getSecureItem, listStorageKeys, removeSecureItem, setSecureItem } from '@/lib/secure-storage'
+import { getSecureItem, setSecureItem } from '@/lib/secure-storage'
 import type { AudioKey, Chat, ChatMessage, DeviceType, IntroAudioKey, PaymentProvider, PaymentTarget, PlanType } from '@/types/chat'
 
 const deviceAudioMap: Record<DeviceType, AudioKey> = {
@@ -587,8 +584,6 @@ export default function ClientChatPage() {
   const [savingDevice, setSavingDevice] = useState(false)
   const [savingPlan, setSavingPlan] = useState(false)
   const [openingPayment, setOpeningPayment] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [deviceToast, setDeviceToast] = useState('')
   const [composerToast, setComposerToast] = useState('')
   const [error, setError] = useState('')
   const [blockedAccess, setBlockedAccess] = useState(() => getStoredAccountBlocked())
@@ -728,13 +723,6 @@ export default function ClientChatPage() {
       }
     })
   }, [chatId])
-
-  useEffect(() => {
-    if (!deviceToast) return undefined
-
-    const timer = window.setTimeout(() => setDeviceToast(''), 9000)
-    return () => window.clearTimeout(timer)
-  }, [deviceToast])
 
   useEffect(() => {
     if (!composerToast) return undefined
@@ -959,11 +947,7 @@ export default function ClientChatPage() {
 
   async function handleDeviceSelect(device: DeviceType) {
     if (!chatId || !accountId || savingDevice) return
-    const isChangingExistingDevice = Boolean(selectedDevice)
-    const changedDevice = isChangingExistingDevice && selectedDevice !== device
-
-    if (isChangingExistingDevice && !changedDevice) {
-      setMenuOpen(false)
+    if (selectedDevice) {
       return
     }
 
@@ -979,13 +963,8 @@ export default function ClientChatPage() {
       storeDevice(chatId, device)
       storeIntroReady(chatId)
       setSelectedDevice(device)
-      if (isChangingExistingDevice) {
-        setVisibleSequenceItems(fullPresentationStep)
-        setDeviceToast('Dispositivo alterado. Avise ao "gordin du xit" que voce quer o xit para outro celular.')
-      } else {
-        setPresentationDevice(device)
-        setVisibleSequenceItems(devicePromptStep)
-      }
+      setPresentationDevice(device)
+      setVisibleSequenceItems(devicePromptStep)
     } catch (deviceError) {
       setError(
         deviceError instanceof Error ? deviceError.message : 'Nao foi possivel salvar sua escolha.',
@@ -1097,27 +1076,6 @@ export default function ClientChatPage() {
     }
   }
 
-  async function handleClientLogout() {
-    clearClientSession()
-    listStorageKeys().forEach((key) => {
-      if (key.startsWith(`${introReadyKeyPrefix}-`)) removeSecureItem(key)
-    })
-    await signOut(auth).catch(() => undefined)
-    setChatId('')
-    setAccountId('')
-    setSelectedDevice('')
-    setPresentationDevice('')
-    setSelectedPlan('')
-    setChatMeta(null)
-    setMessages([])
-    setIntroAudioKey('start')
-    setVisibleSequenceItems(0)
-    setMenuOpen(false)
-    setDeviceToast('')
-    setComposerToast('')
-    setBlockedAccess(false)
-  }
-
   if (isAccountBlocked) {
     return <NotFoundAccess />
   }
@@ -1162,58 +1120,8 @@ export default function ClientChatPage() {
               </span>
             )}
             <strong className="online-pill"><span aria-hidden="true" />Online</strong>
-            {selectedDevice && !isComposerLocked && (
-              <button
-                className="client-menu-button"
-                type="button"
-                onClick={() => setMenuOpen((open) => !open)}
-                aria-label="Abrir opcoes"
-                aria-expanded={menuOpen}
-              >
-                <span />
-                <span />
-                <span />
-              </button>
-            )}
           </div>
-          {menuOpen && (
-            <div className="client-popover" role="dialog" aria-label="Opcoes do chat privado">
-              <header>
-                <span>Preferencias</span>
-                <button type="button" onClick={() => setMenuOpen(false)}>
-                  Fechar
-                </button>
-              </header>
-              <p>Alterar dispositivo</p>
-              <div className="device-list">
-                {deviceOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    className={selectedDevice === option.value ? 'selected' : ''}
-                    type="button"
-                    onClick={() => {
-                      handleDeviceSelect(option.value)
-                      setMenuOpen(false)
-                    }}
-                    disabled={savingDevice || selectedDevice === option.value}
-                  >
-                    <DeviceIcon icon={option.icon} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
-              <button className="client-logout-button" type="button" onClick={handleClientLogout}>
-                Sair deste chat privado
-              </button>
-            </div>
-          )}
         </header>
-
-        {deviceToast && (
-          <div className="device-change-toast" role="status" aria-live="assertive">
-            {deviceToast}
-          </div>
-        )}
 
         {composerToast && (
           <div className="composer-toast" role="status" aria-live="polite">
