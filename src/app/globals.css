@@ -4758,6 +4758,24 @@ button {
   color: #047857;
 }
 
+.client-logout-button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  background: #fff1f2;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.client-logout-button:hover {
+  background: #ffe4e6;
+  border-color: #fca5a5;
+}
+
 .online-pill span {
   width: 8px;
   height: 8px;
@@ -5383,6 +5401,7 @@ button {
   }
 
   .chat-header .online-pill,
+  .client-logout-button,
   .device-chip {
     min-height: 28px;
     padding: 0 7px;

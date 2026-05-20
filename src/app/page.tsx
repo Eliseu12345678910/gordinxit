@@ -1,17 +1,20 @@
 'use client'
 
 import { FormEvent, useCallback, useEffect, useState } from 'react'
+import { signOut } from 'firebase/auth'
 import { Timestamp } from 'firebase/firestore'
 import { ChatMessages } from '@/components/ChatMessages'
 import { MessageComposer } from '@/components/MessageComposer'
 import { isAccountAccessBlocked } from '@/lib/account-block'
 import { signInAdmin } from '@/lib/admin-session'
+import { auth } from '@/lib/firebase'
 import { videoFiles } from '@/lib/video'
 import {
   addMessage,
   addPaymentTrackingToLink,
   ChatAccessError,
   checkClientSessionAccess,
+  clearClientSession,
   deviceOptions,
   ensureAnonymousSession,
   getPluginPaymentLink,
@@ -1100,6 +1103,30 @@ export default function ClientChatPage() {
     }
   }
 
+  async function handleLogout() {
+    setError('')
+    setOpeningPayment(false)
+    setComposerToast('')
+    clearClientSession()
+    storeAccountBlocked(false)
+    setBlockedAccess(false)
+    setChatId('')
+    setAccountId('')
+    setChatMeta(null)
+    setMessages([])
+    setSelectedDevice('')
+    setPresentationDevice('')
+    setSelectedPlan('')
+    setIntroAudioKey('start')
+    setVisibleSequenceItems(1)
+
+    try {
+      await signOut(auth)
+    } catch (logoutError) {
+      console.error('Nao foi possivel sair da conta:', logoutError)
+    }
+  }
+
   if (isAccountBlocked) {
     return <NotFoundAccess />
   }
@@ -1144,6 +1171,9 @@ export default function ClientChatPage() {
               </span>
             )}
             <strong className="online-pill"><span aria-hidden="true" />Online</strong>
+            <button type="button" className="client-logout-button" onClick={handleLogout}>
+              Sair
+            </button>
           </div>
         </header>
 
