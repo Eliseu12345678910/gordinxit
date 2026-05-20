@@ -603,8 +603,8 @@ function getPosterPlanItems(
       items.splice(4, 0, {
         label: 'Este plano nao funciona para iOS',
         detail: paidPlan === 'weekly'
-          ? 'Seu plano Semanal ja foi identificado. Para usar no iOS, pegue o Mensal ou Permanente e fale no chat para ajustar o reembolso do Semanal.'
-          : 'Seu plano Mensal ja foi identificado. Para esta conta iOS, o Permanente e o plano que libera o uso completo; pegue o Permanente e fale no chat para ajustar o reembolso do Mensal.',
+          ? 'Aviso importante: o plano Semanal nao e compativel com iOS. Antes de comprar outro plano, confira que para iOS e necessario o Mensal ou Permanente. Como o Semanal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Semanal so sera tratado apos adquirir um plano compativel.'
+          : 'Aviso importante: o plano Mensal nao libera o uso completo nesta conta iOS. Antes de comprar outro plano, confira que para iOS o plano compativel e o Permanente. Como o Mensal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Mensal so sera tratado apos adquirir o Permanente.',
         tone: 'negative',
       })
     }
