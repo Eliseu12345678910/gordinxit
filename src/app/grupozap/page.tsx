@@ -140,6 +140,22 @@ export default function GrupoZapPage() {
             {copyFeedback}
           </p>
         </section>
+
+        <section className="gz-video-card" aria-labelledby="videoTitle">
+          <div className="gz-video-copy">
+            <span>Tutorial rapido</span>
+            <h2 id="videoTitle">Veja onde tocar</h2>
+            <p>O video mostra como abrir os 3 pontos e escolher abrir no navegador.</p>
+          </div>
+
+          <video
+            className="gz-tutorial-video"
+            controls
+            playsInline
+            preload="metadata"
+            src="/grupozap-tutorial.mp4"
+          />
+        </section>
       </div>
 
       <style jsx>{`
@@ -185,7 +201,8 @@ export default function GrupoZapPage() {
         }
 
         .gz-top-card,
-        .gz-copy-card {
+        .gz-copy-card,
+        .gz-video-card {
           margin: 10px;
           border: 1px solid #e6e8ee;
           border-radius: 8px;
@@ -397,6 +414,52 @@ export default function GrupoZapPage() {
           font-weight: 850;
         }
 
+        .gz-video-card {
+          display: grid;
+          gap: 12px;
+          padding: 15px;
+          background:
+            linear-gradient(135deg, rgba(0, 213, 223, 0.06), rgba(254, 44, 85, 0.04)),
+            #ffffff;
+        }
+
+        .gz-video-copy {
+          display: grid;
+          gap: 4px;
+        }
+
+        .gz-video-copy span {
+          color: #008e96;
+          font-size: 12px;
+          font-weight: 950;
+          letter-spacing: 0;
+          text-transform: uppercase;
+        }
+
+        .gz-video-copy h2 {
+          margin: 0;
+          color: #111111;
+          font-size: clamp(22px, 5vw, 28px);
+          line-height: 1.1;
+          letter-spacing: 0;
+        }
+
+        .gz-video-copy p {
+          margin: 0;
+          color: #6b7280;
+          line-height: 1.38;
+        }
+
+        .gz-tutorial-video {
+          display: block;
+          width: 100%;
+          max-height: min(68vh, 620px);
+          border: 1px solid #e6e8ee;
+          border-radius: 8px;
+          background: #111111;
+          box-shadow: 0 14px 30px rgba(18, 21, 27, 0.1);
+        }
+
         @media (max-width: 430px) {
           .gz-page-shell {
             padding: 0;
@@ -413,7 +476,8 @@ export default function GrupoZapPage() {
           }
 
           .gz-top-card,
-          .gz-copy-card {
+          .gz-copy-card,
+          .gz-video-card {
             margin: 8px;
           }
 
