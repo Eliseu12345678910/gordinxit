@@ -86,76 +86,91 @@ export default function GrupoZapPage() {
   return (
     <main className="gz-page-shell">
       <div className="gz-app-frame">
-        <header className="gz-app-bar" aria-label="Navegador do TikTok">
-          <span className="gz-brand-word">TikTok</span>
-        </header>
+        {browserState !== 'browser' && (
+          <header className="gz-app-bar" aria-label="Navegador do TikTok">
+            <span className="gz-brand-word">TikTok</span>
+          </header>
+        )}
 
-        <section className="gz-top-card" aria-labelledby="pageTitle">
-          <div className={`gz-status-panel gz-state-${browserState}`} aria-live="polite">
-            <span className="gz-status-label">{status.label}</span>
-            <p>{status.title}</p>
-            <small>{status.text}</small>
-          </div>
+        {browserState === 'browser' ? (
+          <section className="gz-open-card" aria-labelledby="openTitle">
+            <span className="gz-open-label">Navegador detectado</span>
+            <h1 id="openTitle">Abrindo o grupo</h1>
+            <p>Se nao abrir sozinho, toque no botao abaixo.</p>
+            <a className="gz-whatsapp-button" href={groupLink}>
+              Abrir grupo no WhatsApp
+            </a>
+          </section>
+        ) : (
+          <>
+            <section className="gz-top-card" aria-labelledby="pageTitle">
+              <div className={`gz-status-panel gz-state-${browserState}`} aria-live="polite">
+                <span className="gz-status-label">{status.label}</span>
+                <p>{status.title}</p>
+                <small>{status.text}</small>
+              </div>
 
-          <p className="gz-kicker">Aviso do navegador</p>
-          <h1 id="pageTitle">Abra o grupo pelo navegador</h1>
+              <p className="gz-kicker">Aviso do navegador</p>
+              <h1 id="pageTitle">Abra o grupo pelo navegador</h1>
 
-          <ol className="gz-steps" aria-label="Passo a passo">
-            <li className="gz-step">
-              <span className="gz-step-number">1</span>
-              <strong>Toque nos 3 pontos</strong>
-            </li>
+              <ol className="gz-steps" aria-label="Passo a passo">
+                <li className="gz-step">
+                  <span className="gz-step-number">1</span>
+                  <strong>Toque nos 3 pontos</strong>
+                </li>
 
-            <li className="gz-step">
-              <span className="gz-step-number">2</span>
-              <strong>Abrir no navegador</strong>
-            </li>
+                <li className="gz-step">
+                  <span className="gz-step-number">2</span>
+                  <strong>Abrir no navegador</strong>
+                </li>
 
-            <li className="gz-step">
-              <span className="gz-step-number">3</span>
-              <strong>O grupo abre sozinho</strong>
-            </li>
-          </ol>
-        </section>
+                <li className="gz-step">
+                  <span className="gz-step-number">3</span>
+                  <strong>O grupo abre sozinho</strong>
+                </li>
+              </ol>
+            </section>
 
-        <section className="gz-copy-card" aria-labelledby="copyTitle">
-          <div>
-            <h2 id="copyTitle">Nao apareceu a opcao?</h2>
-            <p>Copie o link e cole no Google.</p>
-          </div>
+            <section className="gz-copy-card" aria-labelledby="copyTitle">
+              <div>
+                <h2 id="copyTitle">Nao apareceu a opcao?</h2>
+                <p>Copie o link e cole no Google.</p>
+              </div>
 
-          <div className="gz-link-box">
-            <input
-              id="groupLink"
-              type="text"
-              readOnly
-              value={groupLink}
-              aria-label="Link do grupo do WhatsApp"
-            />
-            <button className="gz-copy-button" type="button" onClick={copyGroupLink}>
-              Copiar
-            </button>
-          </div>
-          <p className="gz-copy-feedback" role="status" aria-live="polite">
-            {copyFeedback}
-          </p>
-        </section>
+              <div className="gz-link-box">
+                <input
+                  id="groupLink"
+                  type="text"
+                  readOnly
+                  value={groupLink}
+                  aria-label="Link do grupo do WhatsApp"
+                />
+                <button className="gz-copy-button" type="button" onClick={copyGroupLink}>
+                  Copiar
+                </button>
+              </div>
+              <p className="gz-copy-feedback" role="status" aria-live="polite">
+                {copyFeedback}
+              </p>
+            </section>
 
-        <section className="gz-video-card" aria-labelledby="videoTitle">
-          <div className="gz-video-copy">
-            <span>Tutorial rapido</span>
-            <h2 id="videoTitle">Veja onde tocar</h2>
-            <p>O video mostra como abrir os 3 pontos e escolher abrir no navegador.</p>
-          </div>
+            <section className="gz-video-card" aria-labelledby="videoTitle">
+              <div className="gz-video-copy">
+                <span>Tutorial rapido</span>
+                <h2 id="videoTitle">Veja onde tocar</h2>
+                <p>O video mostra como abrir os 3 pontos e escolher abrir no navegador.</p>
+              </div>
 
-          <video
-            className="gz-tutorial-video"
-            controls
-            playsInline
-            preload="metadata"
-            src="/grupozap-tutorial.mp4"
-          />
-        </section>
+              <video
+                className="gz-tutorial-video"
+                controls
+                playsInline
+                preload="metadata"
+                src="/grupozap-tutorial.mp4"
+              />
+            </section>
+          </>
+        )}
       </div>
 
       <style jsx>{`
@@ -202,7 +217,8 @@ export default function GrupoZapPage() {
 
         .gz-top-card,
         .gz-copy-card,
-        .gz-video-card {
+        .gz-video-card,
+        .gz-open-card {
           margin: 10px;
           border: 1px solid #e6e8ee;
           border-radius: 8px;
@@ -460,6 +476,66 @@ export default function GrupoZapPage() {
           box-shadow: 0 14px 30px rgba(18, 21, 27, 0.1);
         }
 
+        .gz-open-card {
+          min-height: calc(100vh - 40px);
+          display: grid;
+          align-content: center;
+          justify-items: center;
+          gap: 12px;
+          padding: clamp(24px, 7vw, 46px);
+          text-align: center;
+          background:
+            radial-gradient(circle at 50% 0%, rgba(0, 213, 223, 0.12), transparent 18rem),
+            #ffffff;
+        }
+
+        .gz-open-label {
+          display: inline-flex;
+          min-height: 30px;
+          align-items: center;
+          border-radius: 999px;
+          background: #e9f8ef;
+          color: #24663d;
+          padding: 0 12px;
+          font-size: 12px;
+          font-weight: 950;
+          letter-spacing: 0;
+          text-transform: uppercase;
+        }
+
+        .gz-open-card h1 {
+          max-width: 10ch;
+          margin: 0;
+        }
+
+        .gz-open-card p {
+          margin: 0;
+          color: #6b7280;
+          font-size: clamp(16px, 4vw, 19px);
+          line-height: 1.35;
+        }
+
+        .gz-whatsapp-button {
+          width: min(100%, 360px);
+          min-height: 56px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 8px;
+          background: #16a34a;
+          color: #ffffff;
+          padding: 0 20px;
+          font-size: 17px;
+          font-weight: 950;
+          text-align: center;
+          text-decoration: none;
+          box-shadow: 0 16px 32px rgba(22, 163, 74, 0.22);
+        }
+
+        .gz-whatsapp-button:hover {
+          background: #12803a;
+        }
+
         @media (max-width: 430px) {
           .gz-page-shell {
             padding: 0;
@@ -477,7 +553,8 @@ export default function GrupoZapPage() {
 
           .gz-top-card,
           .gz-copy-card,
-          .gz-video-card {
+          .gz-video-card,
+          .gz-open-card {
             margin: 8px;
           }
 
