@@ -16,6 +16,12 @@ const planLabels: Record<PaymentTarget, string> = {
   plugin: 'Plugin ServiceSync Core',
 }
 
+const planDurations: Record<PlanType, number | null> = {
+  weekly: 7,
+  monthly: 30,
+  lifetime: null,
+}
+
 const approvedEventParts = ['compra_aprovada', 'paid', 'approved', 'completed']
 const refundedEventParts = ['reembolso', 'refunded', 'refund']
 const cancelledEventParts = ['cancel', 'canceled', 'cancelado', 'cancelada']
@@ -184,6 +190,19 @@ function findPlan(payload: JsonRecord): PaymentTarget | undefined {
   return undefined
 }
 
+function isPlan(value: unknown): value is PlanType {
+  return value === 'weekly' || value === 'monthly' || value === 'lifetime'
+}
+
+function expirationFor(plan: PlanType) {
+  const days = planDurations[plan]
+  if (!days) return null
+
+  const expiresAt = new Date()
+  expiresAt.setDate(expiresAt.getDate() + days)
+  return Timestamp.fromDate(expiresAt)
+}
+
 function eventName(payload: JsonRecord) {
   return firstString(
     payload.webhook_event_type,
@@ -302,14 +321,14 @@ async function getLiveIntroEnabled(adminDb: ReturnType<typeof getAdminDb>) {
 function getPaymentConfirmationMessages(liveIntroEnabled: boolean) {
   if (liveIntroEnabled) {
     return [
-      'Pagamento confirmado, mano. Fica de olho aqui no chat privado que eu ja te envio logo apos finalizar a live',
-      'beleza?',
+      'Pagamento confirmado. O acesso fica registrado na area de planos do site.',
+      'Se precisar de atendimento, chame pelo WhatsApp com o codigo da compra.',
     ]
   }
 
   return [
-    'Pagamento confirmado, mano. Fica de olho aqui no chat privado que eu ja te envio em ate 6h',
-    'Eu falo "em ate 6h", mas falo isso que e para agir com transparencia com voce, pois a gente sempre manda antes disso. So aguardar, beleza?',
+    'Pagamento confirmado. O acesso fica registrado na area de planos do site.',
+    'Se precisar de atendimento, chame pelo WhatsApp com o codigo da compra.',
   ]
 }
 
@@ -474,6 +493,17 @@ export async function POST(request: NextRequest) {
           status: 'active',
           activatedAt: FieldValue.serverTimestamp(),
           expiresAt: null,
+        }
+        chatUpdate.subscription = subscription
+        accountUpdate.subscription = subscription
+      }
+
+      if (!isPluginPayment && isPlan(plan)) {
+        const subscription = {
+          plan,
+          status: 'active',
+          activatedAt: FieldValue.serverTimestamp(),
+          expiresAt: expirationFor(plan),
         }
         chatUpdate.subscription = subscription
         accountUpdate.subscription = subscription

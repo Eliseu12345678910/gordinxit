@@ -298,7 +298,11 @@ export async function checkClientSessionAccess() {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ idToken }),
+    body: JSON.stringify({
+      idToken,
+      chatId: getStoredChatId(),
+      accountId: getStoredAccountId(),
+    }),
   })
 
   const payload = (await response.json()) as { blocked?: boolean; code?: string; error?: string }

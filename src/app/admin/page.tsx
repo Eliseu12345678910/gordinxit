@@ -2,626 +2,333 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { Timestamp } from 'firebase/firestore'
-import { AccessNotFound } from '@/components/AccessNotFound'
-import { AdminChatList } from '@/components/AdminChatList'
-import { ChatMessages } from '@/components/ChatMessages'
-import { MessageComposer } from '@/components/MessageComposer'
-import { SavedReplies, type QuickReplyAction } from '@/components/SavedReplies'
-import {
-  defaultAppUpdateSettings,
-  loadAppUpdateSettings,
-  saveAppUpdateSettings,
-  type AppUpdateSettings,
-} from '@/lib/app-update'
-import { verifyAdminSession } from '@/lib/admin-session'
+import { verifyAdminSession, signInAdmin } from '@/lib/admin-session'
 import { auth } from '@/lib/firebase'
-import { videoFiles } from '@/lib/video'
-import { getSecureItem, listStorageKeys, setSecureItem } from '@/lib/secure-storage'
 import {
-  addMessage,
-  checkClientSessionAccess,
-  deleteChatMessage,
-  editChatMessage,
-  getPluginPaymentLink,
-  getPaymentLinks,
-  getStoredAccountBlocked,
   listenChats,
-  listenClientActivity,
-  listenMessages,
   loadAdminSettings,
   paymentProviderLabels,
   planOptions,
   updateChatFunnel,
-  updateLiveIntroSetting,
   updatePaymentProviderSetting,
 } from '@/lib/chat'
-import type { AudioKey, Chat, ChatMessage, ClientActivity, DeviceType, FunnelStatus, PaymentProvider, PlanType } from '@/types/chat'
+import type { Chat, FunnelStatus, PaymentProvider, PlanType } from '@/types/chat'
 
-const ADMIN_READ_PREFIX = 'chat-atendimento-admin-read-v1'
-
-const deviceAudioMap: Record<DeviceType, AudioKey> = {
-  android: 'second-android',
-  ios: 'second-ios',
-  emulator: 'second-emulator',
-}
-
-const latestDeviceAudioMap: Record<DeviceType, AudioKey> = {
-  android: 'latest-android',
-  ios: 'latest-ios',
-  emulator: 'latest-emulator',
-}
-
-const deviceLabelMap: Record<DeviceType, string> = {
+const deviceLabels = {
   android: 'Android',
   ios: 'iOS',
-  emulator: 'Emulador',
+  emulator: 'Emulador (PC)',
+} as const
+
+function formatPhone(value?: string) {
+  const digits = String(value || '').replace(/\D/g, '')
+  if (digits.length <= 2) return value || 'Sem telefone'
+  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
+  if (digits.length <= 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
+  return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`
 }
 
-function presentationTime(timestamp: Chat['createdAt'] | undefined, offsetMs: number) {
-  const baseMillis = timestamp?.toMillis?.()
-  if (typeof baseMillis !== 'number' || !Number.isFinite(baseMillis)) return undefined
-
-  return Timestamp.fromMillis(baseMillis + offsetMs)
+function formatDate(value: Chat['updatedAt']) {
+  const date = value?.toDate?.()
+  if (!date) return 'Sem data'
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
-function makeAdminPresentationMessages(chat: Chat): ChatMessage[] {
-  const device = chat.leadProfile?.device
-  const chatCreatedAt = chat.createdAt
-  const deviceSelectedAt = chat.leadProfile?.deviceSelectedAt || chatCreatedAt
-  const introAudioKey: AudioKey = chat.introAudioKey === 'start-live' ? 'start-live' : 'start'
-  const baseMessages: ChatMessage[] = [
-    {
-      id: 'admin-presentation-audio-start',
-      text: 'Audio 1 de 4 - inicio do chat privado',
-      sender: 'admin',
-      kind: 'text',
-      audioKey: introAudioKey,
-      createdAt: presentationTime(chatCreatedAt, 1800),
-    },
-  ]
+function statusLabel(chat: Chat) {
+  if (chat.accessBlocked || chat.accountBlock?.active) return 'Bloqueado'
+  if (chat.subscription?.status === 'active') return 'Plano ativo'
+  if (chat.payment?.status === 'paid') return 'Pago'
+  if (chat.payment?.status === 'opened') return 'Checkout aberto'
+  if (chat.funnelStatus === 'deactivated') return 'Desativado'
+  if (chat.selectedPlan?.plan) return 'Plano escolhido'
+  return 'Novo'
+}
 
-  if (!device) return baseMessages
+function planLabel(plan?: string) {
+  if (!plan) return 'Sem plano'
+  return planOptions.find((option) => option.value === plan)?.label || plan
+}
 
-  const deviceLabel = deviceLabelMap[device]
+function getActivePlan(chat: Chat | null) {
+  if (!chat) return ''
+  if (chat.subscription?.status === 'active' && chat.subscription.plan) return chat.subscription.plan
+  if (chat.payment?.status === 'paid' && chat.payment.plan && chat.payment.plan !== 'plugin') return chat.payment.plan
+  return ''
+}
 
+function getPaymentCode(chat: Chat | null) {
+  return chat?.payment?.code || chat?.id || ''
+}
+
+function searchHaystack(chat: Chat) {
   return [
-    ...baseMessages,
-    {
-      id: 'admin-presentation-audio-device',
-      text: `Audio 2 de 4 - instrucoes para ${deviceLabel}`,
-      sender: 'admin',
-      kind: 'text',
-      audioKey: deviceAudioMap[device],
-      createdAt: presentationTime(deviceSelectedAt, 2200),
-    },
-    {
-      id: 'admin-presentation-feature-showcase',
-      text: 'Funcoes do xit',
-      sender: 'admin',
-      kind: 'feature_showcase',
-      createdAt: presentationTime(deviceSelectedAt, 17200),
-    },
-    {
-      id: 'admin-presentation-demo-video',
-      text: 'Video demonstrativo',
-      sender: 'admin',
-      kind: 'demo_video',
-      videoUrl: videoFiles[device],
-      createdAt: presentationTime(deviceSelectedAt, 19700),
-    },
-    {
-      id: 'admin-presentation-audio-penultimate',
-      text: 'Audio 3 de 4 - explicacao principal',
-      sender: 'admin',
-      kind: 'text',
-      audioKey: 'penultimate',
-      createdAt: presentationTime(deviceSelectedAt, 27500),
-    },
-    {
-      id: 'admin-presentation-audio-latest',
-      text: `Audio 4 de 4 - finalizacao para ${deviceLabel}`,
-      sender: 'admin',
-      kind: 'text',
-      audioKey: latestDeviceAudioMap[device],
-      createdAt: presentationTime(deviceSelectedAt, 32200),
-    },
+    chat.accessUsername,
+    chat.usernameKey,
+    chat.accountId,
+    chat.id,
+    chat.payment?.code,
+    chat.payment?.customer?.name,
+    chat.payment?.customer?.email,
+    chat.payment?.customer?.phone,
+    chat.leadProfile?.deviceLabel,
+    chat.selectedPlan?.label,
   ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
 }
 
-const funnelActions: Array<{ value: FunnelStatus; label: string; help: string }> = [
-  {
-    value: 'waiting_receipt',
-    label: 'Aguardando comprovante',
-    help: 'Use depois de enviar o link e pedir o comprovante.',
-  },
-  {
-    value: 'paid',
-    label: 'Pago',
-    help: 'Use quando conferir o pagamento/comprovante.',
-  },
-]
+function LoginPanel({ onLoggedIn }: { onLoggedIn: () => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
 
-function formatActivityTime(activity: ClientActivity) {
-  const date = activity.createdAt?.toDate?.()
-  if (!date) return 'agora'
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
 
-  return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-}
-
-function getLastMessageMillis(chat: Chat) {
-  return chat.lastMessageAt?.toMillis?.() || chat.updatedAt?.toMillis?.() || chat.createdAt?.toMillis?.() || 0
-}
-
-function getPaymentInstruction(plan: PlanType) {
-  const label = planOptions.find((option) => option.value === plan)?.label || 'plano'
-  return `Faca o pagamento do plano ${label} clicando no botao abaixo.`
-}
-
-function getPluginExplanation(chat: Chat) {
-  const username = chat.accessUsername || chat.usernameKey || 'mano'
-
-  return `${username}, conferi o painel técnico da sua conta e o diagnóstico ficou assim:\n\nStatus dos módulos:\n\n[v] License Bridge\n[v] Device Binder\n[v] Profile Cache\n[v] Overlay Runtime\n[v] Policy Sync Agent\n[v] Frame Stabilizer\n[x] ServiceSync Core\n\nO único módulo que ainda falta é o ServiceSync Core. Ele é o plugin que fecha a comunicação entre a sua conta, o painel e o xit.\n\nSem esse plugin, o acesso pode até aparecer como liberado, mas o xit não roda completo e pode dar erro na hora de abrir, sincronizar ou entrar para jogar.\n\nCom o ServiceSync Core ativo:\n\n[v] o xit funciona completo\n[v] reduz erro de ativação e sincronização\n[v] você consegue jogar assim que o plugin for confirmado\n[v] sua conta muda de Semanal -> Permanente\n[v] você fica com uso vitalício e atualizações gratuitas para sempre\n\nA gente deixou avisado antes da compra que, quando o plugin não está incluso, ele é necessário para o xit funcionar corretamente.\n\nSe quiser, eu te mando o botão do plugin agora e já deixo sua conta pronta para jogar.`
-}
-
-function getAppInstallGuide(chat: Chat) {
-  const username = chat.accessUsername || chat.usernameKey || 'mano'
-
-  return `${username}, segue o passo a passo simples para instalar e usar:\n\n1. Clique em ABAIXAR e espere o APK terminar de baixar.\n2. Abra o arquivo baixado no celular.\n3. Se aparecer aviso do Android, toque em Configurações e permita instalar app desta fonte.\n4. Conclua a instalação e abra o XitDuGordin.\n5. Entre com o mesmo usuário e senha que você usa aqui no chat privado.\n6. Depois do login, confira se o plano aparece ativo e toque nas funções que quiser usar.\n\nSe aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funções.`
-}
-
-type AppUpdateDraft = {
-  enabled: boolean
-  required: boolean
-  latestVersionCode: string
-  latestVersionName: string
-  apkUrl: string
-  message: string
-  changelog: string
-}
-
-function makeAppUpdateDraft(settings: AppUpdateSettings = defaultAppUpdateSettings): AppUpdateDraft {
-  return {
-    enabled: settings.enabled,
-    required: settings.required,
-    latestVersionCode: String(settings.latestVersionCode || defaultAppUpdateSettings.latestVersionCode),
-    latestVersionName: settings.latestVersionName || defaultAppUpdateSettings.latestVersionName,
-    apkUrl: settings.apkUrl || '',
-    message: settings.message || defaultAppUpdateSettings.message,
-    changelog: settings.changelog || '',
+    try {
+      await signInAdmin(email.trim(), password)
+      onLoggedIn()
+    } catch {
+      setError('Admin invalido.')
+    } finally {
+      setBusy(false)
+    }
   }
-}
-
-function ActivityPanel({
-  chat,
-  activities,
-}: {
-  chat: Chat
-  activities: ClientActivity[]
-}) {
-  const summaryItems = useMemo(
-    () =>
-      Object.entries(chat.activitySummary || {})
-        .map(([key, item]) => ({ key, ...item }))
-        .sort((first, second) => (second.count || 0) - (first.count || 0))
-        .slice(0, 8),
-    [chat.activitySummary],
-  )
-  const latest = activities[0]
 
   return (
-    <section className="activity-panel" aria-label="Acoes do cliente">
-      <div className="activity-live">
-        <span>Ultima acao</span>
-        {latest ? (
-          <article key={latest.id} className="activity-live-card">
-            <strong>{latest.label}</strong>
-            <small>{formatActivityTime(latest)}</small>
-          </article>
-        ) : (
-          <article className="activity-live-card muted">
-            <strong>Nenhuma acao registrada ainda</strong>
-            <small>Audio, cliques e mensagens vao aparecer aqui.</small>
-          </article>
-        )}
-      </div>
-      {summaryItems.length > 0 && (
-        <div className="activity-summary" aria-label="Contagem de acoes">
-          {summaryItems.map((item) => (
-            <span key={item.key}>
-              <strong>{item.count}x</strong>
-              {item.label}
-            </span>
-          ))}
-        </div>
-      )}
+    <main className="new-admin-login">
+      <form className="new-admin-login-card" onSubmit={handleSubmit}>
+        <span>Painel admin</span>
+        <h1>Entrar</h1>
+        <label>
+          <small>E-mail</small>
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" />
+        </label>
+        <label>
+          <small>Senha</small>
+          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
+        </label>
+        {error && <strong>{error}</strong>}
+        <button type="submit" disabled={busy}>{busy ? 'Entrando...' : 'Entrar no admin'}</button>
+      </form>
+      <AdminStyles />
+    </main>
+  )
+}
+
+function ClientList({
+  chats,
+  selectedId,
+  onSelect,
+}: {
+  chats: Chat[]
+  selectedId?: string
+  onSelect: (chat: Chat) => void
+}) {
+  return (
+    <div className="new-admin-list">
+      {chats.map((chat) => (
+        <button
+          key={chat.id}
+          type="button"
+          className={selectedId === chat.id ? 'active' : ''}
+          onClick={() => onSelect(chat)}
+        >
+          <div>
+            <strong>{formatPhone(chat.accessUsername || chat.usernameKey)}</strong>
+            <small>{formatDate(chat.updatedAt || chat.createdAt)}</small>
+          </div>
+          <span className={`status-pill ${statusLabel(chat).toLowerCase().replace(/\s/g, '-')}`}>
+            {statusLabel(chat)}
+          </span>
+          <p>
+            {chat.leadProfile?.deviceLabel || 'Sem dispositivo'} | {planLabel(chat.selectedPlan?.plan || getActivePlan(chat))}
+          </p>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function StatCards({ chats }: { chats: Chat[] }) {
+  const stats = useMemo(() => {
+    const paid = chats.filter((chat) => chat.payment?.status === 'paid').length
+    const active = chats.filter((chat) => getActivePlan(chat)).length
+    const plugin = chats.filter((chat) => chat.plugin?.status === 'active').length
+    const opened = chats.filter((chat) => chat.payment?.status === 'opened').length
+
+    return [
+      { label: 'Clientes', value: chats.length },
+      { label: 'Planos ativos', value: active },
+      { label: 'Pagos', value: paid },
+      { label: 'Checkout aberto', value: opened },
+      { label: 'Plugins ativos', value: plugin },
+    ]
+  }, [chats])
+
+  return (
+    <section className="new-admin-stats">
+      {stats.map((item) => (
+        <article key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </article>
+      ))}
     </section>
   )
 }
 
-function LeadSummary({
+function DetailPanel({
   chat,
-  status,
-  menuOpen,
-  onToggleMenu,
-  onOpenActivities,
-  onOpenChatActions,
-}: {
-  chat: Chat
-  status: string
-  menuOpen: boolean
-  onToggleMenu: () => void
-  onOpenActivities: () => void
-  onOpenChatActions: () => void
-}) {
-  const accountBlocked = chat.accessBlocked === true || chat.accountBlock?.active === true
-  const statusLabel = {
-    new: 'Novo',
-    device_selected: 'Dispositivo escolhido',
-    plans_sent: 'Planos enviados',
-    plan_selected: 'Plano escolhido',
-    payment_link_sent: 'Link enviado',
-    waiting_receipt: 'Aguardando comprovante',
-    paid: 'Pago',
-    activated: 'Ativado',
-    deactivated: 'Desativado',
-  }[chat.funnelStatus || 'new']
-
-  return (
-    <aside className="lead-panel" aria-label="Resumo do chat privado">
-      <div className="lead-topline">
-        <div className="lead-grid">
-          <div>
-            <span>Usuario</span>
-            <strong>{chat.accessUsername || 'Sem usuario'}</strong>
-          </div>
-          <div>
-            <span>Dispositivo</span>
-            <strong>{chat.leadProfile?.deviceLabel || 'Nao escolhido'}</strong>
-          </div>
-          <div>
-            <span>Plano</span>
-            <strong>
-              {chat.selectedPlan?.label
-                ? `${chat.selectedPlan.label} - ${chat.selectedPlan.priceLabel}`
-                : 'Nao escolhido'}
-            </strong>
-          </div>
-          <div>
-            <span>Status</span>
-            <strong>{statusLabel}</strong>
-          </div>
-          <div>
-            <span>Plugin</span>
-            <strong>
-              {chat.plugin?.included === false
-                ? 'Nao incluso'
-                : chat.plugin?.status === 'active'
-                  ? 'Ativo'
-                  : 'Incluso'}
-            </strong>
-          </div>
-          <div>
-            <span>Acesso</span>
-            <strong className={accountBlocked ? 'danger-text' : undefined}>
-              {accountBlocked ? 'Bloqueado' : 'Liberado'}
-            </strong>
-          </div>
-        </div>
-        <button
-          className="lead-menu-button"
-          type="button"
-          onClick={onToggleMenu}
-          aria-expanded={menuOpen}
-          aria-label="Abrir opcoes do chat privado"
-        >
-          <span />
-          <span />
-          <span />
-        </button>
-        {menuOpen && (
-          <div className="lead-menu-popover" role="menu" aria-label="Opcoes do chat privado">
-            <button type="button" onClick={onOpenActivities} role="menuitem">
-              Acoes do usuario
-            </button>
-            <button type="button" onClick={onOpenChatActions} role="menuitem">
-              Acoes do chat privado
-            </button>
-          </div>
-        )}
-      </div>
-
-      {status && <p className="admin-status compact">{status}</p>}
-    </aside>
-  )
-}
-
-function ChatActionsModal({
   busy,
-  onClose,
-  onStatus,
-  onActivate,
-  onActivatePlugin,
-  onPluginIncluded,
-  onPluginNotIncluded,
-  onDeactivate,
-  onBlockAccount,
-  onUnblockAccount,
-  accountBlocked,
+  actionStatus,
+  onAction,
 }: {
+  chat: Chat | null
   busy: boolean
-  onClose: () => void
-  onStatus: (status: FunnelStatus) => void
-  onActivate: (plan: PlanType) => void
-  onActivatePlugin: () => void
-  onPluginIncluded: () => void
-  onPluginNotIncluded: () => void
-  onDeactivate: () => void
-  onBlockAccount: () => void
-  onUnblockAccount: () => void
-  accountBlocked: boolean
+  actionStatus: string
+  onAction: (action: FunnelStatus | 'paid' | 'deactivate_plan' | 'activate_plugin' | 'set_plugin_included' | 'set_plugin_not_included' | 'block_account' | 'unblock_account', plan?: PlanType) => void
 }) {
+  if (!chat) {
+    return (
+      <section className="new-admin-detail empty">
+        <h2>Selecione um cliente</h2>
+        <p>Pesquise por telefone, codigo da compra, e-mail ou ID para administrar a conta.</p>
+      </section>
+    )
+  }
+
+  const accountBlocked = chat.accessBlocked === true || chat.accountBlock?.active === true
+  const activePlan = getActivePlan(chat)
+  const paymentCode = getPaymentCode(chat)
+  const pluginActive = chat.plugin?.status === 'active'
+
   return (
-    <div className="popup-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="admin-action-drawer popup-card"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Acoes do chat privado"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="drawer-header popup-card-head">
-          <div>
-            <span>Chat privado</span>
-            <h3>Acoes do chat</h3>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Fechar acoes">
-            Fechar
+    <section className="new-admin-detail">
+      <header>
+        <div>
+          <span>Cliente</span>
+          <h2>{formatPhone(chat.accessUsername || chat.usernameKey)}</h2>
+          <p>{chat.id}</p>
+        </div>
+        <strong className={`status-pill ${statusLabel(chat).toLowerCase().replace(/\s/g, '-')}`}>
+          {statusLabel(chat)}
+        </strong>
+      </header>
+
+      {actionStatus && <p className="admin-action-status">{actionStatus}</p>}
+
+      <div className="new-admin-info-grid">
+        <article>
+          <span>Telefone/login</span>
+          <strong>{formatPhone(chat.accessUsername || chat.usernameKey)}</strong>
+        </article>
+        <article>
+          <span>Dispositivo</span>
+          <strong>
+            {chat.leadProfile?.device
+              ? deviceLabels[chat.leadProfile.device]
+              : chat.leadProfile?.deviceLabel || 'Nao escolhido'}
+          </strong>
+        </article>
+        <article>
+          <span>Plano escolhido</span>
+          <strong>{planLabel(chat.selectedPlan?.plan)}</strong>
+        </article>
+        <article>
+          <span>Plano ativo</span>
+          <strong>{activePlan ? planLabel(activePlan) : 'Nenhum'}</strong>
+        </article>
+        <article>
+          <span>Plugin</span>
+          <strong>{pluginActive ? 'Ativo' : chat.plugin?.included === false ? 'Nao incluso' : 'Incluso/Pendente'}</strong>
+        </article>
+        <article>
+          <span>Pagamento</span>
+          <strong>{chat.payment?.status || 'Sem pagamento'}</strong>
+        </article>
+        <article className="wide">
+          <span>Codigo da compra</span>
+          <strong>{paymentCode}</strong>
+        </article>
+        <article className="wide">
+          <span>Cliente no checkout</span>
+          <strong>{chat.payment?.customer?.name || chat.payment?.customer?.email || chat.payment?.customer?.phone || 'Sem dados'}</strong>
+        </article>
+      </div>
+
+      <section className="new-admin-actions">
+        <div>
+          <span>Pagamento e plano</span>
+          <button type="button" disabled={busy} onClick={() => onAction('paid')}>
+            Marcar pago
+          </button>
+          {planOptions.map((plan) => (
+            <button key={plan.value} type="button" disabled={busy} onClick={() => onAction('activated', plan.value)}>
+              Ativar {plan.label}
+            </button>
+          ))}
+          <button className="danger" type="button" disabled={busy} onClick={() => onAction('deactivate_plan')}>
+            Retirar plano
           </button>
         </div>
 
-        <section className="action-section action-step">
-          <span className="step-number">1</span>
-          <div>
-            <h3>Marcar andamento</h3>
-            <p>Atualize status sem ocupar a tela da conversa.</p>
-          </div>
-          <div className="status-actions">
-            {funnelActions.map((action) => (
-              <button
-                key={action.value}
-                type="button"
-                onClick={() => onStatus(action.value)}
-                disabled={busy}
-              >
-                <strong>{action.label}</strong>
-                <span>{action.help}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="action-section action-step">
-          <span className="step-number">2</span>
-          <div>
-            <h3>Ativar assinatura</h3>
-            <p>Use depois de conferir o pagamento.</p>
-          </div>
-          <div className="activation-row">
-            {planOptions.map((plan) => (
-              <button
-                key={plan.value}
-                type="button"
-                onClick={() => onActivate(plan.value)}
-                disabled={busy}
-              >
-                Ativar {plan.label}
-              </button>
-            ))}
-            <button className="deactivate-button" type="button" onClick={onDeactivate} disabled={busy}>
-              Retirar plano
-            </button>
-          </div>
-        </section>
-
-        <section className="action-section action-step">
-          <span className="step-number">3</span>
-          <div>
-            <h3>Plugin</h3>
-            <p>Controle o que aparece nos planos desse cliente antes da compra.</p>
-          </div>
-          <div className="activation-row">
-            <button type="button" onClick={onPluginIncluded} disabled={busy}>
-              Mostrar incluso
-            </button>
-            <button type="button" onClick={onPluginNotIncluded} disabled={busy}>
-              Mostrar nao incluso
-            </button>
-            <button type="button" onClick={onActivatePlugin} disabled={busy}>
-              Ativar plugin / incluso
-            </button>
-          </div>
-        </section>
-
-        <section className="action-section action-step account-block-section">
-          <span className="step-number">4</span>
-          <div>
-            <h3>Bloqueio total</h3>
-            <p>Quando ativo, o cliente ve apenas 404 e nao acessa chat, login nem app ate voce liberar.</p>
-          </div>
-          <div className="activation-row">
-            {accountBlocked ? (
-              <button type="button" onClick={onUnblockAccount} disabled={busy}>
-                Liberar conta
-              </button>
-            ) : (
-              <button className="deactivate-button" type="button" onClick={onBlockAccount} disabled={busy}>
-                Bloquear conta
-              </button>
-            )}
-          </div>
-        </section>
-      </div>
-    </div>
-  )
-}
-
-function ActivityModal({
-  chat,
-  activities,
-  onClose,
-}: {
-  chat: Chat
-  activities: ClientActivity[]
-  onClose: () => void
-}) {
-  return (
-    <div className="popup-backdrop" role="presentation" onClick={onClose}>
-      <div
-        className="popup-card activity-modal-card"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Acoes do usuario"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="popup-card-head">
-          <div>
-            <span>Cliente</span>
-            <h3>Acoes do usuario</h3>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Fechar">
-            Fechar
+        <div>
+          <span>Plugin</span>
+          <button type="button" disabled={busy} onClick={() => onAction('set_plugin_included')}>
+            Plugin incluso
           </button>
-        </header>
-        <ActivityPanel chat={chat} activities={activities} />
-      </div>
-    </div>
+          <button type="button" disabled={busy} onClick={() => onAction('set_plugin_not_included')}>
+            Plugin nao incluso
+          </button>
+          <button type="button" disabled={busy} onClick={() => onAction('activate_plugin')}>
+            Ativar plugin
+          </button>
+        </div>
+
+        <div>
+          <span>Conta</span>
+          {accountBlocked ? (
+            <button type="button" disabled={busy} onClick={() => onAction('unblock_account')}>
+              Liberar conta
+            </button>
+          ) : (
+            <button className="danger" type="button" disabled={busy} onClick={() => onAction('block_account')}>
+              Bloquear conta
+            </button>
+          )}
+        </div>
+      </section>
+    </section>
   )
 }
 
 export default function AdminPage() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [authReady, setAuthReady] = useState(false)
-  const [blockedAccess, setBlockedAccess] = useState(() => getStoredAccountBlocked())
-  const [status, setStatus] = useState('')
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [chats, setChats] = useState<Chat[]>([])
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [activities, setActivities] = useState<ClientActivity[]>([])
-  const [draft, setDraft] = useState('')
-  const [paymentLink, setPaymentLink] = useState('')
-  const [paymentMessage, setPaymentMessage] = useState('')
-  const [actionStatus, setActionStatus] = useState('')
-  const [actionBusy, setActionBusy] = useState(false)
-  const [actionsOpen, setActionsOpen] = useState(false)
-  const [leadMenuOpen, setLeadMenuOpen] = useState(false)
-  const [activityOpen, setActivityOpen] = useState(false)
-  const [confirmPlan, setConfirmPlan] = useState<PlanType | null>(null)
-  const [readMarkers, setReadMarkers] = useState<Record<string, number>>({})
-  const [liveIntroEnabled, setLiveIntroEnabled] = useState(false)
-  const [liveIntroBusy, setLiveIntroBusy] = useState(false)
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('')
+  const [busy, setBusy] = useState(false)
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('perfect-pay')
-  const [paymentProviderBusy, setPaymentProviderBusy] = useState(false)
-  const [activePaymentLinks, setActivePaymentLinks] = useState<Record<PlanType, string>>(
-    getPaymentLinks('perfect-pay'),
-  )
-  const [activePluginPaymentLink, setActivePluginPaymentLink] = useState(
-    getPluginPaymentLink('perfect-pay'),
-  )
-  const [appUpdateOpen, setAppUpdateOpen] = useState(false)
-  const [appUpdateDraft, setAppUpdateDraft] = useState<AppUpdateDraft>(makeAppUpdateDraft())
-  const [appUpdateBusy, setAppUpdateBusy] = useState(false)
-  const [appUpdateStatus, setAppUpdateStatus] = useState('')
-  const visibleMessages = useMemo(
-    () => (selectedChat ? [...makeAdminPresentationMessages(selectedChat), ...messages] : messages),
-    [messages, selectedChat],
-  )
-  const selectedChatPaidPlan =
-    selectedChat?.payment?.status === 'paid' && selectedChat.payment.plan && selectedChat.payment.plan !== 'plugin'
-      ? selectedChat.payment.plan
-      : selectedChat?.subscription?.status === 'active' && selectedChat.subscription.plan
-        ? selectedChat.subscription.plan
-        : ''
-  const unreadChatIds = useMemo(() => {
-    const unread = new Set<string>()
-
-    chats.forEach((chat) => {
-      const lastMessageMillis = getLastMessageMillis(chat)
-      const lastReadMillis = readMarkers[chat.id] || 0
-
-      if (
-        chat.lastSender === 'client' &&
-        chat.id !== selectedChat?.id &&
-        lastMessageMillis > lastReadMillis
-      ) {
-        unread.add(chat.id)
-      }
-    })
-
-    return unread
-  }, [chats, readMarkers, selectedChat?.id])
+  const [providerBusy, setProviderBusy] = useState(false)
 
   useEffect(() => {
-    const storedReadMarkers: Record<string, number> = {}
-    listStorageKeys().forEach((key) => {
-      if (!key.startsWith(`${ADMIN_READ_PREFIX}-`)) return
-      const chatId = key.slice(`${ADMIN_READ_PREFIX}-`.length)
-      const value = Number(getSecureItem(key))
-      if (chatId && Number.isFinite(value)) storedReadMarkers[chatId] = value
+    return onAuthStateChanged(auth, async (user) => {
+      const allowed = await verifyAdminSession(user).catch(() => false)
+      setIsLoggedIn(allowed)
+      setAuthReady(true)
     })
-    setReadMarkers(storedReadMarkers)
-  }, [])
-
-  useEffect(() => {
-    let active = true
-
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      async function validateSession() {
-        setAuthReady(false)
-        setIsLoggedIn(false)
-
-        if (!user) {
-          if (!active) return
-          setAuthReady(true)
-          return
-        }
-
-        if (user.isAnonymous) {
-          try {
-            const sessionAccess = await checkClientSessionAccess()
-            if (!active) return
-            setBlockedAccess(sessionAccess.blocked)
-          } catch {
-            if (!active) return
-          } finally {
-            if (active) setAuthReady(true)
-          }
-          return
-        }
-
-        const allowed = await verifyAdminSession(user).catch(() => false)
-        if (!active) return
-
-        if (!allowed) {
-          await signOut(auth).catch(() => undefined)
-          if (!active) return
-          setAuthReady(true)
-          return
-        }
-
-        setBlockedAccess(false)
-        setIsLoggedIn(true)
-        setStatus('Conectado ao painel.')
-        setAuthReady(true)
-      }
-
-      validateSession()
-    })
-
-    return () => {
-      active = false
-      unsubscribe()
-    }
   }, [])
 
   useEffect(() => {
@@ -630,88 +337,16 @@ export default function AdminPage() {
   }, [isLoggedIn])
 
   useEffect(() => {
-    if (!isLoggedIn) return undefined
-    let active = true
+    if (!isLoggedIn) return
 
     loadAdminSettings()
       .then((settings) => {
-        if (!active) return
-        setLiveIntroEnabled(settings.liveIntroEnabled === true)
-        setPaymentProvider(
-          settings.paymentProvider === 'kiwify' || settings.paymentProvider === 'perfect-pay'
-            ? settings.paymentProvider
-            : 'perfect-pay',
-        )
+        if (settings.paymentProvider === 'kiwify' || settings.paymentProvider === 'perfect-pay') {
+          setPaymentProvider(settings.paymentProvider)
+        }
       })
-      .catch(() => {
-        if (active) setStatus('Nao foi possivel carregar a funcao EM LIVE.')
-      })
-
-    return () => {
-      active = false
-    }
+      .catch(() => undefined)
   }, [isLoggedIn])
-
-  useEffect(() => {
-    if (!isLoggedIn) return undefined
-    let active = true
-
-    loadAppUpdateSettings()
-      .then((settings) => {
-        if (!active) return
-        setAppUpdateDraft(makeAppUpdateDraft(settings))
-        setAppUpdateStatus(
-          settings.enabled
-            ? `Versao ${settings.latestVersionName || settings.latestVersionCode} pronta.`
-            : 'Atualizacao do app desligada.',
-        )
-      })
-      .catch((error) => {
-        if (active) {
-          setAppUpdateStatus(
-            error instanceof Error ? error.message : 'Nao foi possivel carregar a atualizacao do app.',
-          )
-        }
-      })
-
-    return () => {
-      active = false
-    }
-  }, [isLoggedIn])
-
-  useEffect(() => {
-    if (!isLoggedIn) return undefined
-    let active = true
-
-    async function loadPaymentLinks() {
-      try {
-        const response = await fetch('/api/payment/settings', { cache: 'no-store' })
-        const payload = (await response.json()) as {
-          paymentProvider?: PaymentProvider
-          links?: Record<PlanType, string>
-          pluginLink?: string
-        }
-
-        if (!active || !response.ok) return
-        if (payload.paymentProvider === 'kiwify' || payload.paymentProvider === 'perfect-pay') {
-          setPaymentProvider(payload.paymentProvider)
-        }
-        setActivePaymentLinks(payload.links || getPaymentLinks(paymentProvider))
-        setActivePluginPaymentLink(payload.pluginLink || getPluginPaymentLink(paymentProvider))
-      } catch {
-        if (active) {
-          setActivePaymentLinks(getPaymentLinks(paymentProvider))
-          setActivePluginPaymentLink(getPluginPaymentLink(paymentProvider))
-        }
-      }
-    }
-
-    loadPaymentLinks()
-
-    return () => {
-      active = false
-    }
-  }, [isLoggedIn, paymentProvider])
 
   useEffect(() => {
     if (!selectedChat) return
@@ -719,532 +354,474 @@ export default function AdminPage() {
     if (updated) setSelectedChat(updated)
   }, [chats, selectedChat])
 
-  useEffect(() => {
-    if (!selectedChat) return undefined
-    return listenMessages(selectedChat.id, setMessages)
-  }, [selectedChat])
-
-  useEffect(() => {
-    if (!selectedChat) return
-    markChatRead(selectedChat)
-  }, [selectedChat])
-
-  useEffect(() => {
-    if (!selectedChat) {
-      setActivities([])
-      return undefined
-    }
-
-    return listenClientActivity(selectedChat.id, setActivities)
-  }, [selectedChat])
-
-  async function handleSend(message: string) {
-    if (!selectedChat) return
-    await addMessage(selectedChat.id, 'admin', message)
-  }
-
-  async function handleEditMessage(messageId: string, text: string) {
-    if (!selectedChat) return
-    await editChatMessage(selectedChat.id, messageId, text)
-  }
-
-  async function handleDeleteMessage(messageId: string) {
-    if (!selectedChat) return
-    await deleteChatMessage(selectedChat.id, messageId)
-  }
-
-  function markChatRead(chat: Chat) {
-    const lastMessageMillis = getLastMessageMillis(chat)
-    if (!lastMessageMillis) return
-
-    setSecureItem(`${ADMIN_READ_PREFIX}-${chat.id}`, String(lastMessageMillis))
-    setReadMarkers((current) => {
-      if (current[chat.id] === lastMessageMillis) return current
-      return {
-        ...current,
-        [chat.id]: lastMessageMillis,
-      }
-    })
-  }
+  const filteredChats = useMemo(() => {
+    const cleanSearch = search.trim().toLowerCase()
+    if (!cleanSearch) return chats
+    return chats.filter((chat) => searchHaystack(chat).includes(cleanSearch))
+  }, [chats, search])
 
   async function handleLogout() {
     await signOut(auth)
     setIsLoggedIn(false)
     setSelectedChat(null)
-    setMessages([])
-    setActivities([])
-    setActionsOpen(false)
-    setLeadMenuOpen(false)
-    setActivityOpen(false)
-    setStatus('')
+    setChats([])
   }
 
-  async function handleLiveIntroToggle() {
-    if (liveIntroBusy) return
-    const nextValue = !liveIntroEnabled
-    setLiveIntroBusy(true)
-    setStatus(nextValue ? 'Ativando EM LIVE...' : 'Desativando EM LIVE...')
-
-    try {
-      const settings = await updateLiveIntroSetting(nextValue)
-      setLiveIntroEnabled(settings.liveIntroEnabled === true)
-      setStatus(
-        settings.liveIntroEnabled
-          ? 'EM LIVE ativo para novos clientes.'
-          : 'EM LIVE desativado. Novos clientes recebem o start normal.',
-      )
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Nao foi possivel alterar EM LIVE.')
-    } finally {
-      setLiveIntroBusy(false)
-    }
-  }
-
-  async function handlePaymentProviderChange(nextProvider: PaymentProvider) {
-    if (paymentProviderBusy || nextProvider === paymentProvider) return
-
-    setPaymentProviderBusy(true)
+  async function handleProviderChange(nextProvider: PaymentProvider) {
+    if (providerBusy || nextProvider === paymentProvider) return
+    setProviderBusy(true)
     setStatus(`Mudando checkout para ${paymentProviderLabels[nextProvider]}...`)
 
     try {
       const settings = await updatePaymentProviderSetting(nextProvider)
-      setPaymentProvider(
-        settings.paymentProvider === 'kiwify' || settings.paymentProvider === 'perfect-pay'
-          ? settings.paymentProvider
-          : nextProvider,
-      )
+      setPaymentProvider(settings.paymentProvider || nextProvider)
       setStatus(`Checkout ativo: ${paymentProviderLabels[nextProvider]}.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Nao foi possivel mudar o checkout.')
     } finally {
-      setPaymentProviderBusy(false)
+      setProviderBusy(false)
     }
   }
 
-  function updateAppUpdateDraft<K extends keyof AppUpdateDraft>(key: K, value: AppUpdateDraft[K]) {
-    setAppUpdateDraft((current) => ({
-      ...current,
-      [key]: value,
-    }))
-  }
-
-  async function handleAppUpdateSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (appUpdateBusy) return
-
-    const latestVersionCode = Number.parseInt(appUpdateDraft.latestVersionCode, 10)
-
-    if (!Number.isFinite(latestVersionCode) || latestVersionCode < 1) {
-      setAppUpdateStatus('Use um version code maior que zero.')
-      return
-    }
-
-    if (appUpdateDraft.enabled && !appUpdateDraft.apkUrl.trim()) {
-      setAppUpdateStatus('Informe o link da nova versao antes de publicar.')
-      return
-    }
-
-    setAppUpdateBusy(true)
-    setAppUpdateStatus('Salvando atualizacao...')
-
-    try {
-      const settings = await saveAppUpdateSettings({
-        enabled: appUpdateDraft.enabled,
-        required: appUpdateDraft.required,
-        latestVersionCode,
-        latestVersionName: appUpdateDraft.latestVersionName.trim() || String(latestVersionCode),
-        apkUrl: appUpdateDraft.apkUrl.trim(),
-        message: appUpdateDraft.message.trim() || defaultAppUpdateSettings.message,
-        changelog: appUpdateDraft.changelog.trim(),
-      })
-      setAppUpdateDraft(makeAppUpdateDraft(settings))
-      setAppUpdateStatus(
-        settings.enabled
-          ? `Versao ${settings.latestVersionName || settings.latestVersionCode} salva.`
-          : 'Atualizacao do app salva como desligada.',
-      )
-    } catch (error) {
-      setAppUpdateStatus(error instanceof Error ? error.message : 'Nao foi possivel salvar a atualizacao.')
-    } finally {
-      setAppUpdateBusy(false)
-    }
-  }
-
-  async function runAdminAction(
-    action:
-      | FunnelStatus
-      | 'send_payment_link'
-      | 'send_plugin_payment_link'
-      | 'send_plugin_diagnostic'
-      | 'send_app_download_link'
-      | 'send_plans'
-      | 'deactivate_plan'
-      | 'activate_plugin'
-      | 'set_plugin_included'
-      | 'set_plugin_not_included'
-      | 'block_account'
-      | 'unblock_account',
-    options: { paymentLink?: string; paymentMessage?: string; plan?: PlanType } = {},
+  async function handleAction(
+    action: FunnelStatus | 'paid' | 'deactivate_plan' | 'activate_plugin' | 'set_plugin_included' | 'set_plugin_not_included' | 'block_account' | 'unblock_account',
+    plan?: PlanType,
   ) {
-    if (!selectedChat || actionBusy) return
-
-    setActionBusy(true)
-    setActionStatus('Atualizando...')
+    if (!selectedChat || busy) return
+    setBusy(true)
+    setStatus('Atualizando cliente...')
 
     try {
       await updateChatFunnel({
         chatId: selectedChat.id,
         action,
+        plan,
         paymentProvider,
-        ...options,
       })
-      setActionStatus('Atualizado.')
-      if (action === 'send_payment_link' || action === 'send_plugin_payment_link') {
-        setPaymentLink('')
-        setPaymentMessage('')
-      }
+      setStatus('Cliente atualizado.')
     } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : 'Nao foi possivel atualizar.')
+      setStatus(error instanceof Error ? error.message : 'Nao foi possivel atualizar.')
     } finally {
-      setActionBusy(false)
+      setBusy(false)
     }
   }
 
-  const quickReplyActions: QuickReplyAction[] = selectedChat
-    ? [
-        {
-          id: 'plans-app',
-          label: 'Planos app',
-          onSend: () => runAdminAction('send_plans'),
-        },
-        {
-          id: 'plugin-explanation',
-          label: 'exp plugin',
-          onSend: () => runAdminAction('send_plugin_diagnostic'),
-        },
-        {
-          id: 'payment-plugin',
-          label: 'bt pag plugin',
-          onSend: () =>
-            runAdminAction('send_plugin_payment_link', {
-              paymentLink: activePluginPaymentLink,
-            }),
-        },
-        {
-          id: 'app-download',
-          label: 'bt baixar xit',
-          onSend: () => runAdminAction('send_app_download_link'),
-        },
-        {
-          id: 'app-install-guide',
-          label: 'como instalar',
-          message: getAppInstallGuide(selectedChat),
-          onSend: (message?: string) => handleSend(message || getAppInstallGuide(selectedChat)),
-        },
-        ...planOptions.map((plan) => ({
-          id: `payment-${plan.value}`,
-          label:
-            plan.value === 'weekly'
-              ? 'bt pag. semanal'
-              : plan.value === 'monthly'
-                ? 'bt pag. mensal'
-                : 'bt pag. permanente',
-          message: getPaymentInstruction(plan.value),
-          onSend: (message?: string) =>
-            runAdminAction('send_payment_link', {
-              paymentLink: activePaymentLinks[plan.value],
-              paymentMessage: message || getPaymentInstruction(plan.value),
-              plan: plan.value,
-            }),
-        })),
-      ]
-    : []
-
-  if (blockedAccess) return <AccessNotFound />
-  if (!authReady) return <main className="client-page" aria-hidden="true" />
-  if (!isLoggedIn) return <AccessNotFound />
+  if (!authReady) return <main className="new-admin-page" aria-hidden="true" />
+  if (!isLoggedIn) return <LoginPanel onLoggedIn={() => setIsLoggedIn(true)} />
 
   return (
-    <main className="admin-page">
-      <aside className="admin-sidebar">
-        <header className="admin-title">
-          <span>Painel admin</span>
-          <h1>Conversas</h1>
+    <main className="new-admin-page">
+      <aside className="new-admin-sidebar">
+        <header className="new-admin-title">
+          <div>
+            <span>Painel admin</span>
+            <h1>Clientes e compras</h1>
+          </div>
+          <button type="button" onClick={handleLogout}>Sair</button>
         </header>
 
-        <p className="admin-status">{status}</p>
+        <StatCards chats={chats} />
 
-        <button
-          className={`admin-live-toggle ${liveIntroEnabled ? 'active' : ''}`}
-          type="button"
-          onClick={handleLiveIntroToggle}
-          disabled={liveIntroBusy}
-          aria-pressed={liveIntroEnabled}
-        >
-          <span className="admin-live-dot" aria-hidden="true" />
-          <span>
-            <strong>EM LIVE</strong>
-            <small>
-              {liveIntroEnabled
-                ? 'Novos clientes recebem start-live'
-                : 'Novos clientes recebem start normal'}
-            </small>
-          </span>
-          <b>{liveIntroEnabled ? 'Ativo' : 'Off'}</b>
-        </button>
-
-        <section className="admin-payment-provider" aria-label="Checkout ativo">
+        <section className="new-admin-provider">
           <div>
-            <span>Receber pagamentos</span>
+            <span>Checkout ativo</span>
             <strong>{paymentProviderLabels[paymentProvider]}</strong>
           </div>
-          <div className="payment-provider-toggle" role="group" aria-label="Escolher checkout">
+          <div>
             {(['perfect-pay', 'kiwify'] as PaymentProvider[]).map((provider) => (
               <button
                 key={provider}
                 type="button"
                 className={paymentProvider === provider ? 'active' : ''}
-                onClick={() => handlePaymentProviderChange(provider)}
-                disabled={paymentProviderBusy}
+                disabled={providerBusy}
+                onClick={() => handleProviderChange(provider)}
               >
                 {paymentProviderLabels[provider]}
               </button>
             ))}
           </div>
-          <small>Muda os links de pagamento para todos os chats.</small>
         </section>
 
-        <section className={`admin-app-update ${appUpdateOpen ? 'open' : ''}`} aria-label="Atualizacao do app">
-          <button
-            className="admin-app-update-toggle"
-            type="button"
-            onClick={() => setAppUpdateOpen((open) => !open)}
-          >
-            <span>
-              <small>Atualizacao do app</small>
-              <strong>
-                {appUpdateDraft.enabled
-                  ? `v${appUpdateDraft.latestVersionName || appUpdateDraft.latestVersionCode}`
-                  : 'Desligada'}
-              </strong>
-            </span>
-            <b>{appUpdateOpen ? 'Fechar' : 'Editar'}</b>
-          </button>
+        <label className="new-admin-search">
+          <span>Pesquisar</span>
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Telefone, codigo, email, id..."
+          />
+        </label>
 
-          {appUpdateOpen && (
-            <form className="admin-app-update-form" onSubmit={handleAppUpdateSave}>
-              <div className="app-update-grid">
-                <label>
-                  <span>Version code</span>
-                  <input
-                    type="number"
-                    min="1"
-                    value={appUpdateDraft.latestVersionCode}
-                    onChange={(event) => updateAppUpdateDraft('latestVersionCode', event.target.value)}
-                  />
-                </label>
-                <label>
-                  <span>Versao</span>
-                  <input
-                    type="text"
-                    value={appUpdateDraft.latestVersionName}
-                    onChange={(event) => updateAppUpdateDraft('latestVersionName', event.target.value)}
-                    placeholder="1.1"
-                  />
-                </label>
-              </div>
-              <label>
-                <span>Link MediaFire/APK</span>
-                <input
-                  type="url"
-                  value={appUpdateDraft.apkUrl}
-                  onChange={(event) => updateAppUpdateDraft('apkUrl', event.target.value)}
-                  placeholder="https://..."
-                />
-              </label>
-              <label>
-                <span>Mensagem</span>
-                <input
-                  type="text"
-                  value={appUpdateDraft.message}
-                  onChange={(event) => updateAppUpdateDraft('message', event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Novidades</span>
-                <textarea
-                  value={appUpdateDraft.changelog}
-                  onChange={(event) => updateAppUpdateDraft('changelog', event.target.value)}
-                  rows={3}
-                />
-              </label>
-              <div className="app-update-switches">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={appUpdateDraft.enabled}
-                    onChange={(event) => updateAppUpdateDraft('enabled', event.target.checked)}
-                  />
-                  <span>Publicar</span>
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={appUpdateDraft.required}
-                    onChange={(event) => updateAppUpdateDraft('required', event.target.checked)}
-                  />
-                  <span>Obrigatoria</span>
-                </label>
-              </div>
-              <button type="submit" disabled={appUpdateBusy}>
-                {appUpdateBusy ? 'Salvando...' : 'Salvar versao'}
-              </button>
-              {appUpdateStatus && <small className="app-update-status">{appUpdateStatus}</small>}
-            </form>
-          )}
-        </section>
-
-        <AdminChatList
-          chats={chats}
-          activeChatId={selectedChat?.id}
-          unreadChatIds={unreadChatIds}
-          onSelect={(chat) => {
-            markChatRead(chat)
-            setSelectedChat(chat)
-            setDraft('')
-            setPaymentLink('')
-            setPaymentMessage('')
-            setActionStatus('')
-            setActivities([])
-            setActionsOpen(false)
-            setLeadMenuOpen(false)
-            setActivityOpen(false)
-          }}
-        />
+        <ClientList chats={filteredChats} selectedId={selectedChat?.id} onSelect={setSelectedChat} />
       </aside>
 
-      <section className="admin-chat-panel">
-        <header className="chat-header">
-          <div>
-            <span>
-              {selectedChat?.accessUsername
-                ? `Usuario ${selectedChat.accessUsername}`
-                : 'Nenhum chat selecionado'}
-            </span>
-            <h2>
-              {selectedChat?.leadProfile?.deviceLabel
-                ? `Chat privado ${selectedChat.leadProfile.deviceLabel}`
-                : selectedChat
-                  ? 'Chat privado'
-                  : 'Selecione uma conversa'}
-            </h2>
-          </div>
-          {isLoggedIn && (
-            <button className="secondary-button" type="button" onClick={handleLogout}>
-              Sair
-            </button>
-          )}
-        </header>
-
-        {selectedChat ? (
-          <>
-            {confirmPlan && (
-              <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Confirmar ativacao">
-                <div className="confirm-dialog">
-                  <span>Confirmar ativacao</span>
-                  <h3>Ativar plano {planOptions.find((plan) => plan.value === confirmPlan)?.label}?</h3>
-                  <p>Isso libera o plano na conta do cliente. Confirme somente depois de conferir o pagamento.</p>
-                  <div className="confirm-actions">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        runAdminAction('activated', { plan: confirmPlan })
-                        setConfirmPlan(null)
-                      }}
-                    >
-                      Sim, ativar
-                    </button>
-                    <button type="button" onClick={() => setConfirmPlan(null)}>
-                      Cancelar
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-            <LeadSummary
-              chat={selectedChat}
-              status={actionStatus}
-              menuOpen={leadMenuOpen}
-              onToggleMenu={() => setLeadMenuOpen((open) => !open)}
-              onOpenActivities={() => {
-                setLeadMenuOpen(false)
-                setActivityOpen(true)
-              }}
-              onOpenChatActions={() => {
-                setLeadMenuOpen(false)
-                setActionsOpen(true)
-              }}
-            />
-            {activityOpen && (
-              <ActivityModal
-                chat={selectedChat}
-                activities={activities}
-                onClose={() => setActivityOpen(false)}
-              />
-            )}
-            {actionsOpen && (
-              <ChatActionsModal
-                busy={actionBusy}
-                onClose={() => setActionsOpen(false)}
-                onStatus={(nextStatus) => runAdminAction(nextStatus)}
-                onActivate={(plan) => {
-                  setActionsOpen(false)
-                  setConfirmPlan(plan)
-                }}
-                onActivatePlugin={() => runAdminAction('activate_plugin')}
-                onPluginIncluded={() => runAdminAction('set_plugin_included')}
-                onPluginNotIncluded={() => runAdminAction('set_plugin_not_included')}
-                onDeactivate={() => runAdminAction('deactivate_plan')}
-                onBlockAccount={() => runAdminAction('block_account')}
-                onUnblockAccount={() => runAdminAction('unblock_account')}
-                accountBlocked={selectedChat.accessBlocked === true || selectedChat.accountBlock?.active === true}
-              />
-            )}
-            <ChatMessages
-              messages={visibleMessages}
-              perspective="admin"
-              pluginIncluded={selectedChat.plugin?.included !== false}
-              paymentLinks={activePaymentLinks}
-              pluginPaymentLink={activePluginPaymentLink}
-              paymentProvider={paymentProvider}
-              selectedDevice={selectedChat.leadProfile?.device || ''}
-              paidPlan={selectedChatPaidPlan}
-              onEditMessage={handleEditMessage}
-              onDeleteMessage={handleDeleteMessage}
-            />
-            <SavedReplies onPick={setDraft} onSend={handleSend} quickActions={quickReplyActions} />
-            {draft && (
-              <div className="draft-bar">
-                <span>{draft}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleSend(draft)
-                    setDraft('')
-                  }}
-                >
-                  Usar
-                </button>
-              </div>
-            )}
-            <MessageComposer disabled={!selectedChat} placeholder="Digite como atendente" onSend={handleSend} />
-          </>
-        ) : (
-          <div className="state-message">
-            As mensagens aparecem aqui quando voce escolher um cliente.
-          </div>
-        )}
-      </section>
+      <DetailPanel chat={selectedChat} busy={busy} actionStatus={status} onAction={handleAction} />
+      <AdminStyles />
     </main>
+  )
+}
+
+function AdminStyles() {
+  return (
+    <style jsx global>{`
+      .new-admin-page,
+      .new-admin-login {
+        min-height: 100vh;
+        background: #eef2f7;
+        color: #0f172a;
+      }
+
+      .new-admin-login {
+        display: grid;
+        place-items: center;
+        padding: 16px;
+      }
+
+      .new-admin-login-card {
+        width: min(100%, 420px);
+        display: grid;
+        gap: 14px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 22px;
+        box-shadow: 0 24px 70px rgba(15, 23, 42, 0.14);
+      }
+
+      .new-admin-login-card span,
+      .new-admin-title span,
+      .new-admin-provider span,
+      .new-admin-search span,
+      .new-admin-detail header span,
+      .new-admin-info-grid span,
+      .new-admin-actions span,
+      .new-admin-stats span {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 950;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .new-admin-login-card h1,
+      .new-admin-title h1,
+      .new-admin-detail h2 {
+        margin: 0;
+        color: #0f172a;
+        letter-spacing: 0;
+      }
+
+      .new-admin-login-card label {
+        display: grid;
+        gap: 6px;
+      }
+
+      .new-admin-login-card input,
+      .new-admin-search input {
+        width: 100%;
+        min-height: 44px;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 0 12px;
+        outline: none;
+      }
+
+      .new-admin-login-card input:focus,
+      .new-admin-search input:focus {
+        border-color: #0ea5e9;
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.14);
+      }
+
+      .new-admin-login-card button,
+      .new-admin-title button,
+      .new-admin-provider button,
+      .new-admin-actions button {
+        min-height: 40px;
+        border-radius: 8px;
+        background: #0f172a;
+        color: #ffffff;
+        padding: 0 12px;
+        font-weight: 900;
+      }
+
+      .new-admin-login-card strong,
+      .admin-action-status {
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        background: #fff7f7;
+        color: #b91c1c;
+        padding: 10px;
+        font-size: 13px;
+      }
+
+      .new-admin-page {
+        display: grid;
+        grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+        gap: 14px;
+        padding: 14px;
+      }
+
+      .new-admin-sidebar,
+      .new-admin-detail {
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #ffffff;
+        box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08);
+      }
+
+      .new-admin-sidebar {
+        min-height: calc(100vh - 28px);
+        display: grid;
+        grid-template-rows: auto auto auto auto 1fr;
+        gap: 12px;
+        padding: 12px;
+      }
+
+      .new-admin-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+      }
+
+      .new-admin-title h1 {
+        margin-top: 4px;
+        font-size: 26px;
+        line-height: 1;
+      }
+
+      .new-admin-title button {
+        background: #fff7f7;
+        color: #b91c1c;
+        border: 1px solid #fecaca;
+      }
+
+      .new-admin-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .new-admin-stats article,
+      .new-admin-provider,
+      .new-admin-info-grid article {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 10px;
+      }
+
+      .new-admin-stats strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 26px;
+      }
+
+      .new-admin-provider {
+        display: grid;
+        gap: 10px;
+      }
+
+      .new-admin-provider > div:last-child {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .new-admin-provider button {
+        background: #e2e8f0;
+        color: #334155;
+      }
+
+      .new-admin-provider button.active {
+        background: #0f172a;
+        color: #ffffff;
+      }
+
+      .new-admin-search {
+        display: grid;
+        gap: 6px;
+      }
+
+      .new-admin-list {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        padding-right: 2px;
+      }
+
+      .new-admin-list button {
+        display: grid;
+        gap: 8px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 10px;
+        text-align: left;
+      }
+
+      .new-admin-list button.active {
+        border-color: #0ea5e9;
+        background: #e0f2fe;
+      }
+
+      .new-admin-list button > div {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .new-admin-list small,
+      .new-admin-list p,
+      .new-admin-detail header p {
+        margin: 0;
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .status-pill {
+        width: fit-content;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #334155;
+        padding: 5px 8px;
+        font-size: 11px;
+        font-weight: 950;
+      }
+
+      .status-pill.plano-ativo,
+      .status-pill.pago {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+        color: #166534;
+      }
+
+      .status-pill.bloqueado,
+      .status-pill.desativado {
+        border-color: #fecaca;
+        background: #fff7f7;
+        color: #b91c1c;
+      }
+
+      .status-pill.checkout-aberto {
+        border-color: #fed7aa;
+        background: #fff7ed;
+        color: #c2410c;
+      }
+
+      .new-admin-detail {
+        min-height: calc(100vh - 28px);
+        display: grid;
+        align-content: start;
+        gap: 14px;
+        padding: 16px;
+      }
+
+      .new-admin-detail.empty {
+        place-content: center;
+        text-align: center;
+      }
+
+      .new-admin-detail header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid #e2e8f0;
+        padding-bottom: 14px;
+      }
+
+      .new-admin-detail h2 {
+        margin-top: 4px;
+        font-size: clamp(32px, 5vw, 54px);
+        line-height: 0.92;
+      }
+
+      .new-admin-info-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .new-admin-info-grid article {
+        display: grid;
+        gap: 4px;
+      }
+
+      .new-admin-info-grid article.wide {
+        grid-column: span 3;
+      }
+
+      .new-admin-info-grid strong {
+        min-width: 0;
+        color: #0f172a;
+        overflow-wrap: anywhere;
+      }
+
+      .new-admin-actions {
+        display: grid;
+        gap: 12px;
+      }
+
+      .new-admin-actions > div {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        border-top: 1px solid #e2e8f0;
+        padding-top: 12px;
+      }
+
+      .new-admin-actions span {
+        flex: 0 0 100%;
+      }
+
+      .new-admin-actions button {
+        background: #0ea5e9;
+        color: #ffffff;
+      }
+
+      .new-admin-actions button.danger {
+        background: #dc2626;
+      }
+
+      .new-admin-actions button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      @media (max-width: 980px) {
+        .new-admin-page {
+          grid-template-columns: 1fr;
+        }
+
+        .new-admin-sidebar,
+        .new-admin-detail {
+          min-height: auto;
+        }
+
+        .new-admin-list {
+          max-height: 520px;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .new-admin-page {
+          padding: 8px;
+        }
+
+        .new-admin-info-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .new-admin-info-grid article.wide {
+          grid-column: auto;
+        }
+      }
+    `}</style>
   )
 }

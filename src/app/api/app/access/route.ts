@@ -15,7 +15,18 @@ const planLabels = {
 type PlanType = keyof typeof planLabels
 
 function normalizeUsername(username: string) {
-  return username.trim().toLowerCase()
+  const clean = username.trim().toLowerCase()
+  const rawPhoneDigits = clean.replace(/\D/g, '')
+  const phoneDigits =
+    rawPhoneDigits.length === 13 && rawPhoneDigits.startsWith('55')
+      ? rawPhoneDigits.slice(2)
+      : rawPhoneDigits
+
+  if (phoneDigits.length >= 10 && /^[+\d\s().-]+$/.test(clean)) {
+    return phoneDigits.slice(0, 11)
+  }
+
+  return clean
 }
 
 function hashPassword(password: string, salt: string) {
@@ -65,7 +76,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           allowed: false,
-          message: 'Informe o usuario e a senha do chat privado.',
+          message: 'Informe telefone e senha cadastrados no site.',
         },
         { status: 400 },
       )
@@ -79,7 +90,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           allowed: false,
-          message: 'Conta nao encontrada. Crie sua conta no chat privado primeiro.',
+          message: 'Conta nao encontrada. Crie sua conta no site primeiro.',
         },
         { status: 404 },
       )

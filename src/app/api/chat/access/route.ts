@@ -7,17 +7,50 @@ import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
 export const runtime = 'nodejs'
 
 const usernamePattern = /^[a-zA-Z0-9_.-]{2,24}$/
+const validBrazilDdds = new Set([
+  '11', '12', '13', '14', '15', '16', '17', '18', '19',
+  '21', '22', '24', '27', '28',
+  '31', '32', '33', '34', '35', '37', '38',
+  '41', '42', '43', '44', '45', '46', '47', '48', '49',
+  '51', '53', '54', '55',
+  '61', '62', '63', '64', '65', '66', '67', '68', '69',
+  '71', '73', '74', '75', '77', '79',
+  '81', '82', '83', '84', '85', '86', '87', '88', '89',
+  '91', '92', '93', '94', '95', '96', '97', '98', '99',
+])
 const deviceValues = new Set(['android', 'ios', 'emulator'])
 const planValues = new Set(['weekly', 'monthly', 'lifetime'])
 type IntroAudioKey = 'start' | 'start-live'
 
 function normalizeUsername(username: string) {
-  return username.trim().toLowerCase()
+  const clean = username.trim().toLowerCase()
+  const rawPhoneDigits = clean.replace(/\D/g, '')
+  const phoneDigits =
+    rawPhoneDigits.length === 13 && rawPhoneDigits.startsWith('55')
+      ? rawPhoneDigits.slice(2)
+      : rawPhoneDigits
+
+  if (phoneDigits.length >= 10 && /^[+\d\s().-]+$/.test(clean)) {
+    return phoneDigits.slice(0, 11)
+  }
+
+  return clean
+}
+
+function validateBrazilPhone(digits: string) {
+  if (digits.length !== 10 && digits.length !== 11) return 'Digite seu WhatsApp com DDD.'
+  if (!validBrazilDdds.has(digits.slice(0, 2))) return 'Confira o DDD do seu numero.'
+  if (/^(\d)\1+$/.test(digits)) return 'Digite um numero de WhatsApp valido.'
+  return ''
 }
 
 function validateUsername(username: string) {
-  if (!usernamePattern.test(username.trim())) {
-    return 'Usuario deve ter 2 a 24 caracteres.'
+  const normalized = normalizeUsername(username)
+
+  if (/^\d+$/.test(normalized)) return validateBrazilPhone(normalized)
+
+  if (!usernamePattern.test(normalized)) {
+    return 'Digite um WhatsApp com DDD ou usuario valido.'
   }
   return ''
 }
@@ -97,7 +130,7 @@ export async function POST(request: NextRequest) {
     const adminDb = getAdminDb()
     const decodedToken = await adminAuth.verifyIdToken(body.idToken)
     const uid = decodedToken.uid
-    const username = String(body.username || '').trim()
+    const username = normalizeUsername(String(body.username || ''))
     const password = String(body.password || '')
     const mode = body.mode === 'signup' ? 'signup' : 'login'
     const usernameError = validateUsername(username)
@@ -107,7 +140,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: usernameError || passwordError }, { status: 400 })
     }
 
-    const usernameKey = normalizeUsername(username)
+    const usernameKey = username
     const accountRef = adminDb.collection('accounts').doc(usernameKey)
     const accountSnapshot = await accountRef.get()
 
@@ -270,7 +303,7 @@ export async function POST(request: NextRequest) {
         passwordSalt: salt,
         passwordHash,
         clientId: body.clientId || '',
-        source: 'chat',
+        source: 'site',
         introAudioKey,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
