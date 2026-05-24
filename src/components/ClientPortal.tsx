@@ -455,20 +455,25 @@ function AuthScreen({
   const [confirmPassword, setConfirmPassword] = useState('')
   const [device, setDevice] = useState<DeviceType>('android')
   const [formError, setFormError] = useState('')
+  const [confirmDeviceOpen, setConfirmDeviceOpen] = useState(false)
+  const selectedDeviceOption = deviceOptions.find((option) => option.value === device) || deviceOptions[0]
 
   useEffect(() => {
     if (error) setFormError(error)
   }, [error])
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  function validateAuthForm() {
     const phoneError = validatePhone(phone)
     const passwordError = validatePassword(password)
     const confirmError = mode === 'signup' && password !== confirmPassword ? 'As senhas nao conferem.' : ''
     const nextError = phoneError || passwordError || confirmError
 
     setFormError(nextError)
-    if (nextError) return
+    return !nextError
+  }
+
+  async function submitAccess() {
+    setConfirmDeviceOpen(false)
 
     const result = await onSubmit(normalizePhone(phone), password.trim(), device, mode)
     if (result?.switchTo) {
@@ -476,6 +481,12 @@ function AuthScreen({
       setConfirmPassword('')
     }
     if (result?.message) setFormError(result.message)
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!validateAuthForm()) return
+    setConfirmDeviceOpen(true)
   }
 
   return (
@@ -499,19 +510,30 @@ function AuthScreen({
         </div>
         <div className="portal-auth-copy">
           <span className="ffp-badge">Xit do Gordin | Area do cliente</span>
-          <h1>
-            Entre
-            <strong>na tropa</strong>
-          </h1>
+          <h1>{mode === 'signup' ? 'CRIAR' : 'ENTRAR'}</h1>
           <p>Seu acesso fica ligado ao WhatsApp, senha e dispositivo escolhido.</p>
         </div>
 
         <div className="portal-auth-tabs" role="tablist" aria-label="Tipo de acesso">
-          <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => setMode('signup')}>
-            Criar conta
+          <button
+            type="button"
+            className={mode === 'signup' ? 'active' : ''}
+            onClick={() => {
+              setMode('signup')
+              setConfirmDeviceOpen(false)
+            }}
+          >
+            CRIAR
           </button>
-          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>
-            Entrar
+          <button
+            type="button"
+            className={mode === 'login' ? 'active' : ''}
+            onClick={() => {
+              setMode('login')
+              setConfirmDeviceOpen(false)
+            }}
+          >
+            ENTRAR
           </button>
         </div>
 
@@ -523,6 +545,7 @@ function AuthScreen({
               onChange={(event) => {
                 setPhone(formatPhone(event.target.value))
                 setFormError('')
+                setConfirmDeviceOpen(false)
               }}
               inputMode="tel"
               autoComplete="tel"
@@ -538,6 +561,7 @@ function AuthScreen({
               onChange={(event) => {
                 setPassword(event.target.value)
                 setFormError('')
+                setConfirmDeviceOpen(false)
               }}
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               placeholder="Digite sua senha"
@@ -550,7 +574,10 @@ function AuthScreen({
               <input
                 type="password"
                 value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
+                onChange={(event) => {
+                  setConfirmPassword(event.target.value)
+                  setConfirmDeviceOpen(false)
+                }}
                 autoComplete="new-password"
                 placeholder="Repita sua senha"
               />
@@ -565,7 +592,10 @@ function AuthScreen({
                   key={option.value}
                   type="button"
                   className={device === option.value ? 'active' : ''}
-                  onClick={() => setDevice(option.value)}
+                  onClick={() => {
+                    setDevice(option.value)
+                    setConfirmDeviceOpen(false)
+                  }}
                 >
                   <DeviceGlyph device={option.value} />
                   <strong>{option.label}</strong>
@@ -578,9 +608,27 @@ function AuthScreen({
           {formError && <strong className="portal-form-error">{formError}</strong>}
 
           <button className="portal-auth-submit" type="submit" disabled={loading}>
-            {loading ? 'Aguarde...' : mode === 'signup' ? 'Criar e ver planos' : 'Entrar'}
+            {loading ? 'AGUARDE...' : mode === 'signup' ? 'CRIAR' : 'ENTRAR'}
           </button>
         </form>
+
+        {confirmDeviceOpen && (
+          <section className="portal-device-confirm" aria-live="polite">
+            <span>Confirmar dispositivo</span>
+            <h2>{selectedDeviceOption.label}</h2>
+            <p>
+              Voce vai usar no {selectedDeviceOption.detail}? Escolha certo para liberar os planos e instrucoes corretas.
+            </p>
+            <div>
+              <button type="button" onClick={() => setConfirmDeviceOpen(false)}>
+                Trocar
+              </button>
+              <button type="button" onClick={submitAccess} disabled={loading}>
+                Confirmar {selectedDeviceOption.label}
+              </button>
+            </div>
+          </section>
+        )}
       </section>
       <PortalStyles />
     </main>
@@ -1914,6 +1962,7 @@ function PortalStyles() {
       }
 
       .portal-auth-copy span,
+      .portal-device-confirm span,
       .portal-hero span,
       .portal-topbar span,
       .portal-plan-head span,
@@ -2097,6 +2146,61 @@ function PortalStyles() {
         color: #b91c1c;
         padding: 10px 12px;
         font-size: 13px;
+      }
+
+      .portal-device-confirm {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        gap: 10px;
+        border: 1px solid rgba(34, 211, 238, 0.28);
+        border-radius: 16px;
+        background:
+          linear-gradient(135deg, rgba(34, 197, 94, 0.13), rgba(14, 165, 233, 0.16)),
+          rgba(2, 6, 23, 0.58);
+        padding: 14px;
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+      }
+
+      .portal-device-confirm h2 {
+        margin: 0;
+        color: #ffffff;
+        font-size: 34px;
+        line-height: 0.98;
+        text-transform: uppercase;
+      }
+
+      .portal-device-confirm p {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 13px;
+        font-weight: 850;
+        line-height: 1.35;
+      }
+
+      .portal-device-confirm div {
+        display: grid;
+        grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+        gap: 8px;
+      }
+
+      .portal-device-confirm button {
+        min-height: 44px;
+        border-radius: 8px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-device-confirm button:first-child {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.08);
+        color: #ffffff;
+      }
+
+      .portal-device-confirm button:last-child {
+        background: linear-gradient(135deg, #22c55e, #0ea5e9);
+        color: #021018;
+        box-shadow: 0 14px 30px rgba(14, 165, 233, 0.2);
       }
 
       .portal-auth-submit,
@@ -3073,6 +3177,10 @@ function PortalStyles() {
 
         .portal-device-field > div,
         .plugin-status-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .portal-device-confirm div {
           grid-template-columns: 1fr;
         }
 
