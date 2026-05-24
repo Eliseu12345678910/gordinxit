@@ -24,6 +24,7 @@ import {
   makeId,
   paymentProviderLabels,
   planOptions,
+  registerClientActivity,
   registerPaymentClick,
   requestChatAccess,
   saveDeviceSelection,
@@ -36,6 +37,11 @@ import {
   storeUsername,
 } from '@/lib/chat'
 import { getSecureItem, setSecureItem } from '@/lib/secure-storage'
+import {
+  defaultAppUpdateSettings,
+  loadAppUpdateSettings,
+  type AppUpdateSettings,
+} from '@/lib/app-update'
 import type { Chat, DeviceType, PaymentProvider, PaymentTarget, PlanType } from '@/types/chat'
 
 type PortalTab = 'plans' | 'plugins'
@@ -53,6 +59,40 @@ const deviceLabelMap: Record<DeviceType, string> = {
   android: 'Android',
   ios: 'iOS',
   emulator: 'Emulador (PC)',
+}
+
+const deviceDownloadLabelMap: Record<DeviceType, string> = {
+  android: 'ANDROID',
+  ios: 'IOS',
+  emulator: 'EMULADOR',
+}
+
+const downloadTutorials: Record<DeviceType, string[]> = {
+  android: [
+    'Clique em ABAIXAR e espere o APK terminar de baixar.',
+    'Abra o arquivo baixado no celular.',
+    'Se aparecer aviso do Android, toque em Configuracoes e permita instalar app desta fonte.',
+    'Conclua a instalacao e abra o XitDuGordin.',
+    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
+    'Se aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funcoes.',
+  ],
+  ios: [
+    'Clique em ABAIXAR e abra o link no Safari.',
+    'Siga o aviso da pagina de instalacao para liberar o perfil quando for solicitado.',
+    'Conclua a instalacao e abra o XitDuGordin.',
+    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
+    'Se o iOS pedir confirmacao extra, volte aqui e fale com o suporte antes de refazer o processo.',
+  ],
+  emulator: [
+    'Clique em ABAIXAR e espere o APK terminar de baixar no PC.',
+    'Abra o emulador e arraste o APK para a janela, ou instale pelo gerenciador de APK.',
+    'Aguarde a instalacao terminar e abra o XitDuGordin dentro do emulador.',
+    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
+    'Se aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funcoes.',
+  ],
 }
 
 const planVisuals: Record<PlanType, { name: string; tag: string; tone: string; normalPrice: string }> = {
@@ -369,6 +409,18 @@ function getSelectedDevice(chat: Chat | null, selectedDevice: DeviceType | '') {
   return selectedDevice || chat?.leadProfile?.device || ''
 }
 
+function getDownloadButtonLabel(device: DeviceType | '') {
+  if (device === 'android' || device === 'emulator') {
+    return `ABAIXAR XIT ${deviceDownloadLabelMap[device]}`
+  }
+
+  return 'VOCE POSSUI ESTE PLANO'
+}
+
+function canDownloadXit(device: DeviceType | '') {
+  return device === 'android' || device === 'emulator'
+}
+
 function makeApprovalNotice(chat: Chat | null): PaymentNotice | null {
   const paidTarget = getPaidTarget(chat)
   const code = getPurchaseCode(chat)
@@ -681,6 +733,7 @@ function PlansPageOld({
   paymentLinks,
   paymentProvider,
   onBuy,
+  onDownload,
 }: {
   chat: Chat | null
   selectedDevice: DeviceType | ''
@@ -689,6 +742,7 @@ function PlansPageOld({
   paymentLinks: Record<PlanType, string>
   paymentProvider: PaymentProvider
   onBuy: (target: PaymentTarget, link: string, label: string) => void
+  onDownload: () => void
 }) {
   const activePlan = getActivePlan(chat)
   const purchaseCode = getPurchaseCode(chat)
@@ -740,11 +794,17 @@ function PlansPageOld({
 
               <button
                 type="button"
-                className={isOwned ? 'owned' : ''}
-                disabled={saving || isOwned || !paymentLinks[plan.value]}
-                onClick={() => onBuy(plan.value, paymentLinks[plan.value], `Comprar ${plan.label}`)}
+                className={isOwned ? `owned ${canDownloadXit(device) ? 'download' : 'plan-owned-only'}` : ''}
+                disabled={saving || (!isOwned && !paymentLinks[plan.value])}
+                onClick={() =>
+                  isOwned && canDownloadXit(device)
+                    ? onDownload()
+                    : !isOwned
+                      ? onBuy(plan.value, paymentLinks[plan.value], `Comprar ${plan.label}`)
+                      : undefined
+                }
               >
-                {isOwned ? 'VOCE POSSUI ESTE PLANO' : plan.value === 'lifetime' ? 'Pagamento unico' : 'Assinar agora'}
+                {isOwned ? getDownloadButtonLabel(device) : plan.value === 'lifetime' ? 'Pagamento unico' : 'Assinar agora'}
               </button>
 
               {isOwned && purchaseCode && (
@@ -770,6 +830,7 @@ function PlansPage({
   paymentLinks,
   onLogout,
   onBuy,
+  onDownload,
 }: {
   chat: Chat | null
   canOpenPlugin: boolean
@@ -781,6 +842,7 @@ function PlansPage({
   paymentProvider: PaymentProvider
   onLogout: () => void
   onBuy: (target: PaymentTarget, link: string, label: string) => void
+  onDownload: () => void
 }) {
   const activePlan = getActivePlan(chat)
   const purchaseCode = getPurchaseCode(chat)
@@ -950,17 +1012,23 @@ function PlansPage({
 
                       <button
                         type="button"
-                        className={`ffp-buy-button ${isOwned ? 'portal-owned-button' : ''}`}
-                        onClick={() => onBuy(option.value, paymentLink, `Comprar ${option.label}`)}
-                        disabled={saving || isOwned || !paymentLink}
+                        className={`ffp-buy-button ${isOwned ? `portal-owned-button ${canDownloadXit(device) ? 'download' : 'plan-owned-only'}` : ''}`}
+                        onClick={() =>
+                          isOwned && canDownloadXit(device)
+                            ? onDownload()
+                            : !isOwned
+                              ? onBuy(option.value, paymentLink, `Comprar ${option.label}`)
+                              : undefined
+                        }
+                        disabled={saving || (!isOwned && !paymentLink)}
                       >
-                        {!paymentLink
+                        {!isOwned && !paymentLink
                           ? 'Link indisponivel'
                           : isOwned
                             ? (
                                 <>
                                   <i aria-hidden="true" />
-                                  VOCE POSSUI ESTE PLANO
+                                  {getDownloadButtonLabel(device)}
                                 </>
                               )
                             : option.value === 'lifetime'
@@ -1364,6 +1432,67 @@ function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: ()
   )
 }
 
+function DownloadModal({
+  device,
+  settings,
+  onClose,
+}: {
+  device: DeviceType | ''
+  settings: AppUpdateSettings
+  onClose: () => void
+}) {
+  const selectedDevice = device || 'android'
+  const downloadLabel = getDownloadButtonLabel(selectedDevice)
+  const tutorial = downloadTutorials[selectedDevice]
+  const hasDownload = Boolean(settings.apkUrl)
+
+  return (
+    <div className="portal-modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        className="portal-download-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Download do xit"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span>{deviceLabelMap[selectedDevice]}</span>
+        <h2>{downloadLabel}</h2>
+        <p>Baixe a versao liberada para sua conta e entre com o mesmo usuario e senha do portal.</p>
+
+        <div className="portal-download-info">
+          <small>Versao</small>
+          <strong>{settings.latestVersionName || '1.0'}</strong>
+        </div>
+
+        {hasDownload ? (
+          <a
+            className="portal-download-action"
+            href={settings.apkUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Abrir link de download
+          </a>
+        ) : (
+          <p className="portal-download-warning">
+            Link de download ainda nao cadastrado. Chame o suporte no chat privado.
+          </p>
+        )}
+
+        <ol className="portal-download-steps">
+          {tutorial.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+
+        <button type="button" onClick={onClose}>
+          Fechar
+        </button>
+      </section>
+    </div>
+  )
+}
+
 function NotFoundAccess() {
   return (
     <main className="portal-shell auth-shell">
@@ -1392,6 +1521,8 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
   const [paymentLinks, setPaymentLinks] = useState<Record<PlanType, string>>(getPaymentLinks('perfect-pay'))
   const [pluginPaymentLink, setPluginPaymentLink] = useState(getPluginPaymentLink('perfect-pay'))
   const [approvalNotice, setApprovalNotice] = useState<PaymentNotice | null>(null)
+  const [appUpdateSettings, setAppUpdateSettings] = useState<AppUpdateSettings>(defaultAppUpdateSettings)
+  const [downloadOpen, setDownloadOpen] = useState(false)
   const activePlan = getActivePlan(chatMeta)
   const currentPhone = phone || getStoredUsername()
   const currentDevice = getSelectedDevice(chatMeta, selectedDevice)
@@ -1600,6 +1731,33 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
     }
   }
 
+  async function handleOpenDownload() {
+    if (!canDownloadXit(currentDevice)) return
+
+    setDownloadOpen(true)
+
+    try {
+      setAppUpdateSettings(await loadAppUpdateSettings())
+    } catch (settingsError) {
+      console.error('Nao foi possivel carregar o download do app:', settingsError)
+    }
+
+    if (!chatId || !accountId) return
+    registerClientActivity({
+      chatId,
+      accountId,
+      type: 'button_clicked',
+      label: getDownloadButtonLabel(currentDevice),
+      key: 'open_xit_download',
+      meta: {
+        device: currentDevice || null,
+        version: appUpdateSettings.latestVersionName || null,
+      },
+    }).catch((activityError) => {
+      console.error('Nao foi possivel registrar o clique de download:', activityError)
+    })
+  }
+
   async function handleLogout() {
     clearClientSession()
     storeAccountBlocked(false)
@@ -1664,10 +1822,18 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
           paymentProvider={paymentProvider}
           onLogout={handleLogout}
           onBuy={handleBuy}
+          onDownload={handleOpenDownload}
         />
       )}
 
       {approvalNotice && <ApprovalModal notice={approvalNotice} onClose={closeApprovalNotice} />}
+      {downloadOpen && (
+        <DownloadModal
+          device={currentDevice}
+          settings={appUpdateSettings}
+          onClose={() => setDownloadOpen(false)}
+        />
+      )}
       <PortalStyles />
     </main>
   )
@@ -1752,6 +1918,7 @@ function PortalStyles() {
       .portal-topbar span,
       .portal-plan-head span,
       .plugin-offer span,
+      .portal-download-modal > span,
       .portal-approved-modal > span {
         color: #0284c7;
         font-size: 12px;
@@ -1935,6 +2102,7 @@ function PortalStyles() {
       .portal-auth-submit,
       .portal-plan-card button,
       .portal-plugin-card > button,
+      .portal-download-modal button,
       .portal-approved-modal button {
         min-height: 48px;
         border-radius: 8px;
@@ -2132,9 +2300,44 @@ function PortalStyles() {
 
       .portal-plan-card button.owned,
       .portal-plugin-card > button.owned {
+        background: linear-gradient(135deg, #f97316, #facc15);
+        color: #1f1300;
+        cursor: pointer;
+        box-shadow: 0 16px 32px rgba(249, 115, 22, 0.22);
+      }
+
+      .portal-plan-card button.owned:hover,
+      .portal-plugin-card > button.owned:hover {
+        filter: brightness(1.04);
+      }
+
+      .portal-plan-card button.owned:disabled,
+      .portal-plugin-card > button.owned:disabled {
+        cursor: wait;
+        opacity: 0.72;
+      }
+
+      .portal-plan-card button.owned:not(:disabled),
+      .portal-plugin-card > button.owned:not(:disabled) {
+        opacity: 1;
+      }
+
+      .portal-plan-card button.owned:not(:disabled):active,
+      .portal-plugin-card > button.owned:not(:disabled):active {
+        transform: translateY(1px);
+      }
+
+      .portal-plan-card button.owned.plan-owned-only,
+      .portal-plugin-card > button.owned.plan-owned-only {
         background: #16a34a;
         color: #ffffff;
+        cursor: default;
         box-shadow: none;
+      }
+
+      .portal-plan-card button.owned.plan-owned-only:hover,
+      .portal-plugin-card > button.owned.plan-owned-only:hover {
+        filter: none;
       }
 
       .portal-purchase-code {
@@ -2262,20 +2465,38 @@ function PortalStyles() {
         box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
       }
 
-      .portal-approved-modal h2 {
+      .portal-download-modal {
+        width: min(100%, 520px);
+        max-height: min(92vh, 760px);
+        overflow-y: auto;
+        display: grid;
+        gap: 12px;
+        border: 1px solid rgba(251, 191, 36, 0.34);
+        border-radius: 8px;
+        background:
+          radial-gradient(circle at 20% 0%, rgba(249, 115, 22, 0.14), transparent 14rem),
+          #ffffff;
+        padding: 18px;
+        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+      }
+
+      .portal-approved-modal h2,
+      .portal-download-modal h2 {
         margin: 0;
         color: #0f172a;
         font-size: 34px;
         line-height: 0.95;
       }
 
-      .portal-approved-modal p {
+      .portal-approved-modal p,
+      .portal-download-modal p {
         margin: 0;
         color: #475569;
         line-height: 1.4;
       }
 
-      .portal-approved-modal div {
+      .portal-approved-modal div,
+      .portal-download-info {
         display: grid;
         gap: 4px;
         border: 1px solid #bbf7d0;
@@ -2284,16 +2505,82 @@ function PortalStyles() {
         padding: 12px;
       }
 
-      .portal-approved-modal small {
+      .portal-approved-modal small,
+      .portal-download-info small {
         color: #166534;
         font-size: 12px;
         font-weight: 900;
         text-transform: uppercase;
       }
 
-      .portal-approved-modal div strong {
+      .portal-approved-modal div strong,
+      .portal-download-info strong {
         color: #052e16;
         overflow-wrap: anywhere;
+      }
+
+      .portal-download-action {
+        min-height: 52px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #f97316, #facc15);
+        color: #1f1300;
+        padding: 0 16px;
+        font-size: 14px;
+        font-weight: 950;
+        text-align: center;
+        text-decoration: none;
+        text-transform: uppercase;
+        box-shadow: 0 16px 32px rgba(249, 115, 22, 0.22);
+      }
+
+      .portal-download-warning {
+        border: 1px solid #fed7aa;
+        border-radius: 8px;
+        background: #fff7ed;
+        color: #9a3412 !important;
+        padding: 10px 12px;
+        font-weight: 850;
+      }
+
+      .portal-download-steps {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: downloadSteps;
+      }
+
+      .portal-download-steps li {
+        counter-increment: downloadSteps;
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 9px;
+        align-items: start;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #f8fafc;
+        color: #334155;
+        padding: 10px;
+        font-size: 13px;
+        font-weight: 850;
+        line-height: 1.32;
+      }
+
+      .portal-download-steps li::before {
+        content: counter(downloadSteps);
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: #0f172a;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 950;
       }
 
       .portal-error-banner {
@@ -2488,12 +2775,23 @@ function PortalStyles() {
       }
 
       .portal-owned-button {
+        border: 1px solid rgba(251, 191, 36, 0.54) !important;
+        background:
+          linear-gradient(135deg, #f97316, #facc15) !important;
+        color: #1f1300 !important;
+        cursor: pointer !important;
+        opacity: 1 !important;
+        box-shadow:
+          0 16px 32px rgba(249, 115, 22, 0.24),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.28) !important;
+      }
+
+      .portal-owned-button.plan-owned-only {
         border: 1px solid rgba(34, 197, 94, 0.34) !important;
         background:
           linear-gradient(180deg, rgba(8, 17, 28, 0.96), rgba(4, 10, 18, 0.98)) !important;
         color: #86efac !important;
         cursor: default !important;
-        opacity: 1 !important;
         box-shadow:
           inset 0 0 0 1px rgba(255, 255, 255, 0.035),
           0 0 0 0 transparent !important;
@@ -2505,6 +2803,11 @@ function PortalStyles() {
         display: inline-grid;
         place-items: center;
         border-radius: 999px;
+        background: rgba(31, 19, 0, 0.12);
+        color: #1f1300;
+      }
+
+      .portal-owned-button.plan-owned-only i {
         background: rgba(34, 197, 94, 0.18);
         color: #86efac;
       }

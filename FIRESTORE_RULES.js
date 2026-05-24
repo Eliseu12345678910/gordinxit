@@ -76,7 +76,9 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
-      allow read, write: if isAdmin();
+      allow get: if isAdmin() || (signedIn() && settingId == "app-update");
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /kiwifyEvents/{eventId} {

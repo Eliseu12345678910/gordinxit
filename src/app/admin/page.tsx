@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { verifyAdminSession, signInAdmin } from '@/lib/admin-session'
 import { auth } from '@/lib/firebase'
@@ -13,6 +13,16 @@ import {
   updatePaymentProviderSetting,
 } from '@/lib/chat'
 import type { Chat, FunnelStatus, PaymentProvider, PlanType } from '@/types/chat'
+
+type AdminAction =
+  | FunnelStatus
+  | 'paid'
+  | 'deactivate_plan'
+  | 'activate_plugin'
+  | 'set_plugin_included'
+  | 'set_plugin_not_included'
+  | 'block_account'
+  | 'unblock_account'
 
 const deviceLabels = {
   android: 'Android',
@@ -62,7 +72,36 @@ function getActivePlan(chat: Chat | null) {
 }
 
 function getPaymentCode(chat: Chat | null) {
-  return chat?.payment?.code || chat?.id || ''
+  return chat?.payment?.code || chat?.payment?.platformCode || chat?.id || ''
+}
+
+function getPlatformCode(chat: Chat | null) {
+  return chat?.payment?.platformCode || chat?.payment?.code || ''
+}
+
+function getEventCode(chat: Chat | null) {
+  return chat?.payment?.eventId || ''
+}
+
+function getPlanExpiry(chat: Chat | null) {
+  const expiresAt = chat?.subscription?.expiresAt?.toDate?.()
+  if (!chat?.subscription?.plan) return 'Sem plano'
+  if (!expiresAt) return 'Permanente'
+  return expiresAt.toLocaleDateString('pt-BR')
+}
+
+function paymentStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    paid: 'Pago',
+    opened: 'Checkout aberto',
+    link_sent: 'Link enviado',
+    refunded: 'Reembolsado',
+    rejected: 'Recusado',
+    cancelled: 'Cancelado',
+    pending: 'Pendente',
+  }
+
+  return status ? labels[status] || status : 'Sem pagamento'
 }
 
 function searchHaystack(chat: Chat) {
@@ -72,6 +111,8 @@ function searchHaystack(chat: Chat) {
     chat.accountId,
     chat.id,
     chat.payment?.code,
+    chat.payment?.platformCode,
+    chat.payment?.eventId,
     chat.payment?.customer?.name,
     chat.payment?.customer?.email,
     chat.payment?.customer?.phone,
@@ -187,6 +228,54 @@ function StatCards({ chats }: { chats: Chat[] }) {
   )
 }
 
+function ActionButton({
+  children,
+  busy,
+  tone,
+  onClick,
+}: {
+  children: ReactNode
+  busy: boolean
+  tone?: 'primary' | 'danger' | 'quiet'
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={tone || 'primary'}
+      disabled={busy}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  )
+}
+
+function ActionSection({
+  title,
+  description,
+  children,
+  open,
+}: {
+  title: string
+  description: string
+  children: ReactNode
+  open?: boolean
+}) {
+  return (
+    <details className="new-admin-action-section" open={open}>
+      <summary>
+        <span>
+          <b>{title}</b>
+          <small>{description}</small>
+        </span>
+        <i aria-hidden="true">Abrir</i>
+      </summary>
+      <div>{children}</div>
+    </details>
+  )
+}
+
 function DetailPanel({
   chat,
   busy,
@@ -196,7 +285,7 @@ function DetailPanel({
   chat: Chat | null
   busy: boolean
   actionStatus: string
-  onAction: (action: FunnelStatus | 'paid' | 'deactivate_plan' | 'activate_plugin' | 'set_plugin_included' | 'set_plugin_not_included' | 'block_account' | 'unblock_account', plan?: PlanType) => void
+  onAction: (action: AdminAction, plan?: PlanType) => void
 }) {
   if (!chat) {
     return (
@@ -210,7 +299,13 @@ function DetailPanel({
   const accountBlocked = chat.accessBlocked === true || chat.accountBlock?.active === true
   const activePlan = getActivePlan(chat)
   const paymentCode = getPaymentCode(chat)
+  const platformCode = getPlatformCode(chat)
+  const eventCode = getEventCode(chat)
   const pluginActive = chat.plugin?.status === 'active'
+  const selectedPlan = chat.selectedPlan?.plan
+  const availablePlanActions = planOptions.filter((plan) => plan.value !== activePlan)
+  const selectedPlanAction = selectedPlan && selectedPlan !== activePlan ? selectedPlan : ''
+  const needsPaymentConfirm = chat.payment?.status !== 'paid'
 
   return (
     <section className="new-admin-detail">
@@ -254,12 +349,28 @@ function DetailPanel({
         </article>
         <article>
           <span>Pagamento</span>
-          <strong>{chat.payment?.status || 'Sem pagamento'}</strong>
+          <strong>{paymentStatusLabel(chat.payment?.status)}</strong>
+        </article>
+        <article>
+          <span>Expira em</span>
+          <strong>{getPlanExpiry(chat)}</strong>
         </article>
         <article className="wide">
-          <span>Codigo da compra</span>
+          <span>Codigo pesquisavel</span>
           <strong>{paymentCode}</strong>
         </article>
+        {platformCode && platformCode !== paymentCode && (
+          <article className="wide">
+            <span>Codigo da plataforma</span>
+            <strong>{platformCode}</strong>
+          </article>
+        )}
+        {eventCode && (
+          <article className="wide muted">
+            <span>ID interno do webhook</span>
+            <strong>{eventCode}</strong>
+          </article>
+        )}
         <article className="wide">
           <span>Cliente no checkout</span>
           <strong>{chat.payment?.customer?.name || chat.payment?.customer?.email || chat.payment?.customer?.phone || 'Sem dados'}</strong>
@@ -267,46 +378,89 @@ function DetailPanel({
       </div>
 
       <section className="new-admin-actions">
-        <div>
-          <span>Pagamento e plano</span>
-          <button type="button" disabled={busy} onClick={() => onAction('paid')}>
-            Marcar pago
-          </button>
-          {planOptions.map((plan) => (
-            <button key={plan.value} type="button" disabled={busy} onClick={() => onAction('activated', plan.value)}>
-              Ativar {plan.label}
-            </button>
-          ))}
-          <button className="danger" type="button" disabled={busy} onClick={() => onAction('deactivate_plan')}>
-            Retirar plano
-          </button>
-        </div>
+        <div className="new-admin-quick-actions">
+          {needsPaymentConfirm && (
+            <ActionButton busy={busy} onClick={() => onAction('paid')}>
+              Marcar pagamento como pago
+            </ActionButton>
+          )}
 
-        <div>
-          <span>Plugin</span>
-          <button type="button" disabled={busy} onClick={() => onAction('set_plugin_included')}>
-            Plugin incluso
-          </button>
-          <button type="button" disabled={busy} onClick={() => onAction('set_plugin_not_included')}>
-            Plugin nao incluso
-          </button>
-          <button type="button" disabled={busy} onClick={() => onAction('activate_plugin')}>
-            Ativar plugin
-          </button>
-        </div>
+          {selectedPlanAction && (
+            <ActionButton busy={busy} onClick={() => onAction('activated', selectedPlanAction)}>
+              Ativar {planLabel(selectedPlanAction)}
+            </ActionButton>
+          )}
 
-        <div>
-          <span>Conta</span>
+          {activePlan && (
+            <ActionButton busy={busy} tone="danger" onClick={() => onAction('deactivate_plan')}>
+              Retirar plano ativo
+            </ActionButton>
+          )}
+
           {accountBlocked ? (
-            <button type="button" disabled={busy} onClick={() => onAction('unblock_account')}>
+            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('unblock_account')}>
               Liberar conta
-            </button>
+            </ActionButton>
           ) : (
-            <button className="danger" type="button" disabled={busy} onClick={() => onAction('block_account')}>
+            <ActionButton busy={busy} tone="danger" onClick={() => onAction('block_account')}>
               Bloquear conta
-            </button>
+            </ActionButton>
           )}
         </div>
+
+        <ActionSection
+          title="Planos"
+          description={activePlan ? `Ativo agora: ${planLabel(activePlan)}` : 'Escolha qual acesso liberar'}
+          open={!activePlan}
+        >
+          {availablePlanActions.map((plan) => (
+            <ActionButton
+              key={plan.value}
+              busy={busy}
+              tone={plan.value === selectedPlan ? 'primary' : 'quiet'}
+              onClick={() => onAction('activated', plan.value)}
+            >
+              {activePlan ? `Trocar para ${plan.label}` : `Ativar ${plan.label}`}
+            </ActionButton>
+          ))}
+        </ActionSection>
+
+        <ActionSection
+          title="Plugin"
+          description={pluginActive ? 'ServiceSync Core ativo' : 'Controle de inclusao e ativacao'}
+        >
+          {chat.plugin?.included !== true && (
+            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_included')}>
+              Marcar plugin incluso
+            </ActionButton>
+          )}
+          {chat.plugin?.included !== false && (
+            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_not_included')}>
+              Marcar plugin nao incluso
+            </ActionButton>
+          )}
+          {!pluginActive && (
+            <ActionButton busy={busy} onClick={() => onAction('activate_plugin')}>
+              Ativar plugin
+            </ActionButton>
+          )}
+          {pluginActive && <p>Plugin ja ativo nesta conta.</p>}
+        </ActionSection>
+
+        <ActionSection
+          title="Conta"
+          description={accountBlocked ? 'Cliente bloqueado no portal' : 'Cliente liberado no portal'}
+        >
+          {accountBlocked ? (
+            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('unblock_account')}>
+              Liberar acesso
+            </ActionButton>
+          ) : (
+            <ActionButton busy={busy} tone="danger" onClick={() => onAction('block_account')}>
+              Bloquear acesso
+            </ActionButton>
+          )}
+        </ActionSection>
       </section>
     </section>
   )
@@ -384,7 +538,7 @@ export default function AdminPage() {
   }
 
   async function handleAction(
-    action: FunnelStatus | 'paid' | 'deactivate_plan' | 'activate_plugin' | 'set_plugin_included' | 'set_plugin_not_included' | 'block_account' | 'unblock_account',
+    action: AdminAction,
     plan?: PlanType,
   ) {
     if (!selectedChat || busy) return
@@ -493,7 +647,6 @@ function AdminStyles() {
       .new-admin-search span,
       .new-admin-detail header span,
       .new-admin-info-grid span,
-      .new-admin-actions span,
       .new-admin-stats span {
         color: #64748b;
         font-size: 12px;
@@ -743,7 +896,7 @@ function AdminStyles() {
 
       .new-admin-info-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
       }
 
@@ -753,7 +906,11 @@ function AdminStyles() {
       }
 
       .new-admin-info-grid article.wide {
-        grid-column: span 3;
+        grid-column: span 2;
+      }
+
+      .new-admin-info-grid article.muted {
+        background: #f1f5f9;
       }
 
       .new-admin-info-grid strong {
@@ -764,25 +921,99 @@ function AdminStyles() {
 
       .new-admin-actions {
         display: grid;
-        gap: 12px;
+        gap: 10px;
       }
 
-      .new-admin-actions > div {
-        display: flex;
-        flex-wrap: wrap;
+      .new-admin-quick-actions {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 8px;
-        align-items: center;
-        border-top: 1px solid #e2e8f0;
-        padding-top: 12px;
       }
 
-      .new-admin-actions span {
-        flex: 0 0 100%;
+      .new-admin-action-section {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #ffffff;
+        overflow: hidden;
+      }
+
+      .new-admin-action-section summary {
+        min-height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        cursor: pointer;
+        padding: 10px 12px;
+        list-style: none;
+      }
+
+      .new-admin-action-section summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .new-admin-action-section summary span {
+        display: grid;
+        gap: 3px;
+      }
+
+      .new-admin-action-section summary b {
+        color: #0f172a;
+        font-size: 15px;
+      }
+
+      .new-admin-action-section summary small {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: none;
+      }
+
+      .new-admin-action-section summary i {
+        min-width: 58px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        color: #334155;
+        padding: 6px 9px;
+        font-size: 11px;
+        font-style: normal;
+        font-weight: 950;
+        text-align: center;
+        text-transform: uppercase;
+      }
+
+      .new-admin-action-section[open] summary i {
+        background: #dbeafe;
+        color: #1d4ed8;
+      }
+
+      .new-admin-action-section > div {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        border-top: 1px solid #e2e8f0;
+        background: #f8fafc;
+        padding: 10px;
+      }
+
+      .new-admin-action-section p {
+        grid-column: 1 / -1;
+        margin: 0;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 850;
       }
 
       .new-admin-actions button {
+        width: 100%;
         background: #0ea5e9;
         color: #ffffff;
+      }
+
+      .new-admin-actions button.quiet {
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        color: #334155;
       }
 
       .new-admin-actions button.danger {
@@ -807,11 +1038,68 @@ function AdminStyles() {
         .new-admin-list {
           max-height: 520px;
         }
+
+        .new-admin-info-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .new-admin-quick-actions,
+        .new-admin-action-section > div {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
 
       @media (max-width: 640px) {
         .new-admin-page {
           padding: 8px;
+          gap: 8px;
+        }
+
+        .new-admin-sidebar,
+        .new-admin-detail {
+          border-radius: 8px;
+          padding: 10px;
+        }
+
+        .new-admin-title {
+          align-items: center;
+        }
+
+        .new-admin-title h1 {
+          font-size: 22px;
+        }
+
+        .new-admin-stats {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .new-admin-stats article {
+          padding: 8px;
+        }
+
+        .new-admin-stats span {
+          font-size: 9px;
+        }
+
+        .new-admin-stats strong {
+          font-size: 20px;
+        }
+
+        .new-admin-list {
+          max-height: 420px;
+        }
+
+        .new-admin-list button > div {
+          display: grid;
+        }
+
+        .new-admin-detail header {
+          display: grid;
+        }
+
+        .new-admin-detail h2 {
+          font-size: 34px;
         }
 
         .new-admin-info-grid {
@@ -820,6 +1108,15 @@ function AdminStyles() {
 
         .new-admin-info-grid article.wide {
           grid-column: auto;
+        }
+
+        .new-admin-quick-actions,
+        .new-admin-action-section > div {
+          grid-template-columns: 1fr;
+        }
+
+        .new-admin-action-section summary {
+          align-items: flex-start;
         }
       }
     `}</style>

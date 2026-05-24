@@ -142,7 +142,7 @@ function getStatusEnum(payload: JsonRecord) {
 }
 
 function makeEventId(payload: JsonRecord) {
-  const code = getString(payload.code)
+  const code = getPlatformCode(payload)
   const statusPart = String(getStatusEnum(payload) || getString(payload.sale_status_detail) || 'event')
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 60)
@@ -156,6 +156,10 @@ function makeEventId(payload: JsonRecord) {
     .update(JSON.stringify(payload))
     .digest('hex')
     .slice(0, 48) + `_${statusPart}`
+}
+
+function getPlatformCode(payload: JsonRecord) {
+  return getString(payload.code)
 }
 
 function getCustomerSummary(payload: JsonRecord) {
@@ -174,7 +178,8 @@ function getEventSummary(payload: JsonRecord, chatId: string) {
   return {
     provider: 'perfect-pay',
     chatId: chatId || null,
-    code: getString(payload.code) || null,
+    code: getPlatformCode(payload) || null,
+    platformCode: getPlatformCode(payload) || null,
     status,
     statusLabel: statusLabels[status] || 'unknown',
     saleAmount: Number(payload.sale_amount) || null,
@@ -303,6 +308,7 @@ export async function POST(request: NextRequest) {
     const chat = chatSnapshot.data() || {}
     const accountId = String(chat.accountId || chat.usernameKey || '').toLowerCase()
     const plan = findPlan(payload) || chat.selectedPlan?.plan
+    const platformCode = getPlatformCode(payload) || eventId
     const paymentStatus = approvedStatuses.has(status)
       ? 'paid'
       : status === 5
@@ -328,7 +334,8 @@ export async function POST(request: NextRequest) {
           ...previousPayment,
           provider: 'perfect-pay',
           lastStatus: paymentStatus,
-          lastCode: getString(payload.code) || null,
+          lastCode: platformCode,
+          lastEventId: eventId,
           lastStatusReceivedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         }
@@ -336,7 +343,9 @@ export async function POST(request: NextRequest) {
           ...previousPayment,
           provider: 'perfect-pay',
           status: paymentStatus,
-          code: getString(payload.code) || null,
+          code: platformCode,
+          platformCode,
+          eventId,
           saleAmount: Number(payload.sale_amount) || null,
           customer: getCustomerSummary(payload),
           ...(plan ? { plan } : {}),

@@ -100,6 +100,8 @@ export type Chat = {
     plan?: PaymentTarget
     label?: string
     code?: string
+    platformCode?: string
+    eventId?: string
     saleAmount?: number | null
     customer?: {
       name?: string

@@ -231,20 +231,7 @@ function eventPaymentStatus(payload: JsonRecord) {
 }
 
 function makeEventId(payload: JsonRecord) {
-  const code = firstString(
-    payload.id,
-    payload.order_id,
-    payload.order_ref,
-    payload.order_code,
-    payload.purchase_id,
-    payload.sale_id,
-    payload.code,
-    payload.reference,
-    getNested(payload, 'data', 'id'),
-    getNested(payload, 'data', 'order_id'),
-    getNested(payload, 'order', 'id'),
-    getNested(payload, 'sale', 'id'),
-  )
+  const code = getPlatformCode(payload)
   const eventIdPart = (eventName(payload) || eventPaymentStatus(payload) || 'event')
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 60)
@@ -258,6 +245,29 @@ function makeEventId(payload: JsonRecord) {
     .update(JSON.stringify(payload))
     .digest('hex')
     .slice(0, 48) + `_${eventIdPart}`
+}
+
+function getPlatformCode(payload: JsonRecord) {
+  return firstString(
+    payload.order_code,
+    payload.code,
+    payload.order_ref,
+    payload.purchase_id,
+    payload.sale_id,
+    payload.id,
+    payload.reference,
+    payload.order_id,
+    getNested(payload, 'data', 'order_code'),
+    getNested(payload, 'data', 'code'),
+    getNested(payload, 'data', 'purchase_id'),
+    getNested(payload, 'data', 'sale_id'),
+    getNested(payload, 'data', 'id'),
+    getNested(payload, 'data', 'order_id'),
+    getNested(payload, 'order', 'code'),
+    getNested(payload, 'order', 'id'),
+    getNested(payload, 'sale', 'code'),
+    getNested(payload, 'sale', 'id'),
+  )
 }
 
 function getCustomerSummary(payload: JsonRecord) {
@@ -294,6 +304,7 @@ function getEventSummary(payload: JsonRecord, chatId: string) {
     provider: 'kiwify',
     chatId: chatId || null,
     code: makeEventId(payload),
+    platformCode: getPlatformCode(payload) || null,
     event: eventName(payload) || null,
     statusLabel: eventPaymentStatus(payload),
     saleAmount: getSaleAmount(payload),
@@ -428,11 +439,14 @@ export async function POST(request: NextRequest) {
     const chat = chatSnapshot.data() || {}
     const accountId = String(chat.accountId || chat.usernameKey || '').toLowerCase()
     const plan = findPlan(payload) || chat.selectedPlan?.plan
+    const platformCode = getPlatformCode(payload) || eventId
     const paymentUpdate = {
       ...(chat.payment || {}),
       provider: 'kiwify',
       status: paymentStatus,
-      code: eventId,
+      code: platformCode,
+      platformCode,
+      eventId,
       saleAmount: getSaleAmount(payload),
       customer: getCustomerSummary(payload),
       ...(plan ? { plan } : {}),
