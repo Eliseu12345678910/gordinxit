@@ -351,6 +351,12 @@ function formatPhone(value: string) {
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`
 }
 
+function maskPassword(value: string) {
+  const clean = value.trim()
+  if (!clean) return ''
+  return `${clean.slice(0, 1)}${'*'.repeat(Math.max(clean.length - 1, 3))}`
+}
+
 function validatePhone(phone: string) {
   const digits = normalizePhone(phone)
   const validBrazilDdds = new Set([
@@ -612,24 +618,50 @@ function AuthScreen({
           </button>
         </form>
 
-        {confirmDeviceOpen && (
-          <section className="portal-device-confirm" aria-live="polite">
-            <span>Confirmar dispositivo</span>
-            <h2>{selectedDeviceOption.label}</h2>
-            <p>
-              Voce vai usar no {selectedDeviceOption.detail}? Escolha certo para liberar os planos e instrucoes corretas.
-            </p>
-            <div>
-              <button type="button" onClick={() => setConfirmDeviceOpen(false)}>
-                Trocar
-              </button>
-              <button type="button" onClick={submitAccess} disabled={loading}>
-                Confirmar {selectedDeviceOption.label}
-              </button>
-            </div>
-          </section>
-        )}
       </section>
+      {confirmDeviceOpen && (
+        <section
+          className="portal-auth-confirm-backdrop"
+          role="presentation"
+          onClick={() => setConfirmDeviceOpen(false)}
+        >
+          <div
+            className="portal-auth-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirmacoes de dados"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              className="portal-auth-confirm-close"
+              type="button"
+              aria-label="Fechar"
+              onClick={() => setConfirmDeviceOpen(false)}
+            >
+              X
+            </button>
+            <span>Confirmacoes de dados</span>
+            <h2>Confira antes de continuar</h2>
+            <div className="portal-auth-confirm-data">
+              <p>
+                <small>Numero</small>
+                <strong>{formatPhone(normalizePhone(phone))}</strong>
+              </p>
+              <p>
+                <small>Senha</small>
+                <strong>{maskPassword(password)}</strong>
+              </p>
+              <p>
+                <small>Dispositivo</small>
+                <strong>{selectedDeviceOption.label}</strong>
+              </p>
+            </div>
+            <button className="portal-auth-confirm-submit" type="button" onClick={submitAccess} disabled={loading}>
+              Confirmar
+            </button>
+          </div>
+        </section>
+      )}
       <PortalStyles />
     </main>
   )
@@ -1962,7 +1994,7 @@ function PortalStyles() {
       }
 
       .portal-auth-copy span,
-      .portal-device-confirm span,
+      .portal-auth-confirm-modal > span,
       .portal-hero span,
       .portal-topbar span,
       .portal-plan-head span,
@@ -2148,58 +2180,88 @@ function PortalStyles() {
         font-size: 13px;
       }
 
-      .portal-device-confirm {
+      .portal-auth-confirm-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: grid;
+        place-items: center;
+        background: rgba(2, 6, 23, 0.68);
+        padding: 16px;
+        backdrop-filter: blur(10px);
+      }
+
+      .portal-auth-confirm-modal {
         position: relative;
-        z-index: 2;
+        width: min(100%, 420px);
         display: grid;
-        gap: 10px;
+        gap: 12px;
         border: 1px solid rgba(34, 211, 238, 0.28);
-        border-radius: 16px;
+        border-radius: 8px;
         background:
-          linear-gradient(135deg, rgba(34, 197, 94, 0.13), rgba(14, 165, 233, 0.16)),
-          rgba(2, 6, 23, 0.58);
-        padding: 14px;
-        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+          radial-gradient(circle at 20% 0%, rgba(34, 211, 238, 0.16), transparent 14rem),
+          #ffffff;
+        color: #0f172a;
+        padding: 18px;
+        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
       }
 
-      .portal-device-confirm h2 {
+      .portal-auth-confirm-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        color: #0f172a;
+        font-size: 12px;
+        font-weight: 950;
+      }
+
+      .portal-auth-confirm-modal h2 {
         margin: 0;
-        color: #ffffff;
-        font-size: 34px;
-        line-height: 0.98;
-        text-transform: uppercase;
+        padding-right: 34px;
+        color: #0f172a;
+        font-size: 32px;
+        line-height: 0.95;
       }
 
-      .portal-device-confirm p {
-        margin: 0;
-        color: rgba(255, 255, 255, 0.78);
-        font-size: 13px;
-        font-weight: 850;
-        line-height: 1.35;
-      }
-
-      .portal-device-confirm div {
+      .portal-auth-confirm-data {
         display: grid;
-        grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
         gap: 8px;
       }
 
-      .portal-device-confirm button {
-        min-height: 44px;
+      .portal-auth-confirm-data p {
+        margin: 0;
+        display: grid;
+        gap: 4px;
+        border: 1px solid #e2e8f0;
         border-radius: 8px;
+        background: #f8fafc;
+        padding: 10px;
+      }
+
+      .portal-auth-confirm-data small {
+        color: #64748b;
+        font-size: 11px;
         font-weight: 950;
         text-transform: uppercase;
       }
 
-      .portal-device-confirm button:first-child {
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        background: rgba(255, 255, 255, 0.08);
-        color: #ffffff;
+      .portal-auth-confirm-data strong {
+        color: #0f172a;
+        font-size: 17px;
+        overflow-wrap: anywhere;
       }
 
-      .portal-device-confirm button:last-child {
+      .portal-auth-confirm-submit {
+        min-height: 48px;
+        border-radius: 8px;
         background: linear-gradient(135deg, #22c55e, #0ea5e9);
         color: #021018;
+        font-weight: 950;
+        text-transform: uppercase;
         box-shadow: 0 14px 30px rgba(14, 165, 233, 0.2);
       }
 
@@ -3177,10 +3239,6 @@ function PortalStyles() {
 
         .portal-device-field > div,
         .plugin-status-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .portal-device-confirm div {
           grid-template-columns: 1fr;
         }
 
