@@ -148,7 +148,7 @@ export function addPaymentTrackingToLink(
     const url = new URL(link)
     url.searchParams.set('src', chatId)
     url.searchParams.set('sck', chatId)
-    url.searchParams.set('utm_source', 'chat_privado')
+    url.searchParams.set('utm_source', 'gordin_du_xit')
     url.searchParams.set('utm_medium', 'chat')
     if (plan) url.searchParams.set('utm_campaign', plan)
     url.searchParams.set('utm_content', chatId)
@@ -162,9 +162,9 @@ export function addPaymentTrackingToLink(
 }
 
 export const savedReplies = [
-  'Depois do pagamento eu libero seu acesso imediatamente aqui no chat privado e te envio os tutoriais de download, instalacao e uso.',
+  'Depois do pagamento eu libero seu acesso imediatamente no Gordin du Xit e te envio os tutoriais de download, instalacao e uso.',
   'Fechado, mano. Me fala se voce vai usar no Android, iOS ou emulador que eu te direciono certinho.',
-  'Funciona em Android, iOS e emulador. Depois do pagamento eu libero os tutoriais de download, instalacao e uso aqui no chat privado.',
+  'Funciona em Android, iOS e emulador. Depois do pagamento eu libero os tutoriais de download, instalacao e uso no Gordin du Xit.',
   'A instalacao e simples. Eu te mando o passo a passo e fico aqui ate voce conseguir abrir tudo.',
   'Tem garantia de 7 dias caso apresente mau funcionamento e eu nao consiga resolver.',
   'Me manda o comprovante por aqui que eu confiro e libero seu acesso.',
@@ -338,7 +338,7 @@ export async function requestChatAccess({
   requestedChatId,
 }: {
   username: string
-  password: string
+  password?: string
   mode: 'login' | 'signup'
   clientId: string
   requestedChatId?: string
@@ -659,7 +659,7 @@ export async function updateChatFunnel({
   const payload = (await response.json()) as { error?: string }
 
   if (!response.ok) {
-    throw new Error(payload.error || 'Nao foi possivel atualizar o chat privado.')
+    throw new Error(payload.error || 'Nao foi possivel atualizar o atendimento do Gordin du Xit.')
   }
 }
 

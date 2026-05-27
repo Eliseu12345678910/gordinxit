@@ -205,7 +205,7 @@ export async function POST(request: NextRequest) {
     const chatSnapshot = await chatRef.get()
 
     if (!chatSnapshot.exists) {
-      return NextResponse.json({ error: 'Chat privado nao encontrado.' }, { status: 404 })
+      return NextResponse.json({ error: 'Atendimento Gordin du Xit nao encontrado.' }, { status: 404 })
     }
 
     const chat = chatSnapshot.data()
@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
     const isParticipant = participants.includes(uid)
 
     if (!isAccountOwner && !isParticipant) {
-      return NextResponse.json({ error: 'Voce nao pode alterar este chat privado.' }, { status: 403 })
+      return NextResponse.json({ error: 'Voce nao pode alterar este atendimento.' }, { status: 403 })
     }
 
     if (isAccountAccessBlocked(chat) || isAccountAccessBlocked(accountSnapshot.data())) {

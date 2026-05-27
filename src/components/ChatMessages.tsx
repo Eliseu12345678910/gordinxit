@@ -1134,7 +1134,7 @@ export function ChatMessages({
 
                       <div className="ffp-content">
                         <section className="ffp-hero">
-                          <span className="ffp-badge">Xit do Gordin | Ant-ban</span>
+                          <span className="ffp-badge">Gordin du Xit | Ant-ban</span>
                           <h3>
                             Eleve
                             <strong>seu jogo</strong>
@@ -1150,7 +1150,7 @@ export function ChatMessages({
                               <span className="ffp-cyber-mask" />
                               <span className="ffp-cyber-eye eye-a" />
                               <span className="ffp-cyber-eye eye-b" />
-                              <span className="ffp-cyber-chest">XIT <b>GORDIN</b></span>
+                              <span className="ffp-cyber-chest">GORDIN <b>XIT</b></span>
                               <span className="ffp-cyber-arm arm-a" />
                               <span className="ffp-cyber-arm arm-b" />
                               <span className="ffp-cyber-leg leg-a" />
@@ -1492,7 +1492,7 @@ export function ChatMessages({
 
         if (message.kind === 'app_download_link' && message.downloadLink) {
           const versionLabel = message.appVersionName || '1.0'
-          const appName = message.appName || 'XitDuGordin'
+          const appName = message.appName || 'Gordin du Xit'
 
           return (
             <article
@@ -1512,7 +1512,7 @@ export function ChatMessages({
                 <div className="app-download-title">
                   <h3>{message.text || 'Aqui esta o seu xit, meu mano.'}</h3>
                   <p>
-                    {appName} pronto para baixar. Abra o link, instale o APK e entre com o mesmo usuario e senha do chat privado.
+                    {appName} pronto para baixar. Abra o link, instale o APK e entre com o mesmo WhatsApp cadastrado no Gordin du Xit.
                   </p>
                 </div>
                 <button

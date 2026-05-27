@@ -3,6 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
 import { getAdminDb } from '@/lib/firebase-admin'
+import { isPhoneInput, normalizeBrazilPhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
 
@@ -16,14 +17,10 @@ type PlanType = keyof typeof planLabels
 
 function normalizeUsername(username: string) {
   const clean = username.trim().toLowerCase()
-  const rawPhoneDigits = clean.replace(/\D/g, '')
-  const phoneDigits =
-    rawPhoneDigits.length === 13 && rawPhoneDigits.startsWith('55')
-      ? rawPhoneDigits.slice(2)
-      : rawPhoneDigits
+  const phoneDigits = normalizeBrazilPhone(clean)
 
-  if (phoneDigits.length >= 10 && /^[+\d\s().-]+$/.test(clean)) {
-    return phoneDigits.slice(0, 11)
+  if (phoneDigits.length >= 10 && isPhoneInput(clean)) {
+    return phoneDigits
   }
 
   return clean
@@ -71,12 +68,24 @@ export async function POST(request: NextRequest) {
 
     const username = normalizeUsername(String(body.username || ''))
     const password = String(body.password || '')
+    const androidId = String(body.androidId || '').trim()
 
-    if (!username || !password) {
+    if (!username) {
       return NextResponse.json(
         {
           allowed: false,
-          message: 'Informe telefone e senha cadastrados no site.',
+          message: 'Informe o telefone cadastrado no Gordin du Xit.',
+        },
+        { status: 400 },
+      )
+    }
+
+    if (!androidId) {
+      return NextResponse.json(
+        {
+          allowed: false,
+          message: 'Nao foi possivel identificar este aparelho.',
+          code: 'missing_device_id',
         },
         { status: 400 },
       )
@@ -90,7 +99,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           allowed: false,
-          message: 'Conta nao encontrada. Crie sua conta no site primeiro.',
+          message: 'Conta nao encontrada. Entre pelo site do Gordin du Xit primeiro.',
         },
         { status: 404 },
       )
@@ -109,17 +118,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const passwordSalt = String(account?.passwordSalt || '')
-    const passwordHash = String(account?.passwordHash || '')
+    if (password) {
+      const passwordSalt = String(account?.passwordSalt || '')
+      const passwordHash = String(account?.passwordHash || '')
 
-    if (!passwordSalt || !passwordHash || !verifyPassword(password, passwordSalt, passwordHash)) {
-      return NextResponse.json(
-        {
-          allowed: false,
-          message: 'Usuario ou senha incorretos.',
-        },
-        { status: 401 },
-      )
+      if (passwordSalt && passwordHash && !verifyPassword(password, passwordSalt, passwordHash)) {
+        return NextResponse.json(
+          {
+            allowed: false,
+            message: 'Telefone ou senha incorretos.',
+          },
+          { status: 401 },
+        )
+      }
     }
 
     const subscription =
@@ -140,43 +151,66 @@ export async function POST(request: NextRequest) {
     const pluginName = String(plugin.name || 'ServiceSync Core')
     const pluginActive = pluginStatus === 'active'
 
-    const appDevice = {
-      androidId: String(body.androidId || ''),
-      deviceModel: String(body.deviceModel || ''),
-      manufacturer: String(body.manufacturer || ''),
-      osVersion: String(body.osVersion || ''),
-      brand: String(body.brand || ''),
-      lastAppAccessAt: FieldValue.serverTimestamp(),
-    }
-
-    await accountRef.set(
-      {
-        appDevice,
-        lastAppAccessAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    )
-
     if (!hasActivePlan) {
       return NextResponse.json(
         {
           allowed: false,
           accountId: username,
           message: isExpired
-            ? 'Seu plano expirou. Fale com o gordin du xit no chat privado.'
+            ? 'Seu plano expirou. Fale com o vendedor do Gordin du Xit.'
             : 'Voce nao possui plano para entrar dentro do xit.',
         },
         { status: 403 },
       )
     }
 
+    const currentAppDevice =
+      account?.appDevice && typeof account.appDevice === 'object'
+        ? (account.appDevice as Record<string, unknown>)
+        : {}
+    const boundAndroidId = String(currentAppDevice.androidId || '').trim()
+
+    if (boundAndroidId && boundAndroidId !== androidId) {
+      return NextResponse.json(
+        {
+          allowed: false,
+          accountId: username,
+          message: 'Este acesso ja esta vinculado a outro aparelho. Fale com o vendedor para trocar o aparelho autorizado.',
+          code: 'device_mismatch',
+          deviceLocked: true,
+        },
+        { status: 403 },
+      )
+    }
+
+    const appDevice = {
+      ...currentAppDevice,
+      androidId,
+      deviceModel: String(body.deviceModel || ''),
+      manufacturer: String(body.manufacturer || ''),
+      osVersion: String(body.osVersion || ''),
+      brand: String(body.brand || ''),
+      lockedAt: currentAppDevice.lockedAt || FieldValue.serverTimestamp(),
+      lastAppAccessAt: FieldValue.serverTimestamp(),
+    }
+
+    await accountRef.set(
+      {
+        appDevice,
+        appDeviceLocked: true,
+        lastAppAccessAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+
     return NextResponse.json({
       allowed: true,
       accountId: username,
       username: account?.accessUsername || username,
-      androidId: String(body.androidId || ''),
+      androidId,
       deviceModel: String(body.deviceModel || ''),
+      deviceLocked: true,
       plan,
       planLabel: planLabels[plan],
       expiry: formatExpiry(expiresAt),

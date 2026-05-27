@@ -1,14 +1,11 @@
 'use client'
 
 import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { signOut } from 'firebase/auth'
 import { isAccountAccessBlocked } from '@/lib/account-block'
-import { auth } from '@/lib/firebase'
 import {
   addPaymentTrackingToLink,
   ChatAccessError,
   checkClientSessionAccess,
-  clearClientSession,
   deviceOptions,
   ensureAnonymousSession,
   getClientId,
@@ -37,11 +34,13 @@ import {
   storeUsername,
 } from '@/lib/chat'
 import { getSecureItem, setSecureItem } from '@/lib/secure-storage'
+import { PortalErrorState } from '@/components/PortalErrorState'
 import {
   defaultAppUpdateSettings,
   loadAppUpdateSettings,
   type AppUpdateSettings,
 } from '@/lib/app-update'
+import { formatBrazilPhone, normalizeBrazilPhone } from '@/lib/phone'
 import type { Chat, DeviceType, PaymentProvider, PaymentTarget, PlanType } from '@/types/chat'
 
 type PortalTab = 'plans' | 'plugins'
@@ -72,26 +71,26 @@ const downloadTutorials: Record<DeviceType, string[]> = {
     'Clique em ABAIXAR e espere o APK terminar de baixar.',
     'Abra o arquivo baixado no celular.',
     'Se aparecer aviso do Android, toque em Configuracoes e permita instalar app desta fonte.',
-    'Conclua a instalacao e abra o XitDuGordin.',
-    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Conclua a instalacao e abra o Gordin du Xit.',
+    'Entre com o mesmo WhatsApp cadastrado no Gordin du Xit.',
     'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
-    'Se aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funcoes.',
+    'Se aparecer ServiceSync pendente, fale com o vendedor antes de tentar mexer nas funcoes.',
   ],
   ios: [
     'Clique em ABAIXAR e abra o link no Safari.',
     'Siga o aviso da pagina de instalacao para liberar o perfil quando for solicitado.',
-    'Conclua a instalacao e abra o XitDuGordin.',
-    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Conclua a instalacao e abra o Gordin du Xit.',
+    'Entre com o mesmo WhatsApp cadastrado no Gordin du Xit.',
     'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
     'Se o iOS pedir confirmacao extra, volte aqui e fale com o suporte antes de refazer o processo.',
   ],
   emulator: [
     'Clique em ABAIXAR e espere o APK terminar de baixar no PC.',
     'Abra o emulador e arraste o APK para a janela, ou instale pelo gerenciador de APK.',
-    'Aguarde a instalacao terminar e abra o XitDuGordin dentro do emulador.',
-    'Entre com o mesmo usuario e senha que voce usa aqui no chat privado.',
+    'Aguarde a instalacao terminar e abra o Gordin du Xit dentro do emulador.',
+    'Entre com o mesmo WhatsApp cadastrado no Gordin du Xit.',
     'Depois do login, confira se o plano aparece ativo e toque nas funcoes que quiser usar.',
-    'Se aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funcoes.',
+    'Se aparecer ServiceSync pendente, fale com o vendedor antes de tentar mexer nas funcoes.',
   ],
 }
 
@@ -114,6 +113,12 @@ const planVisuals: Record<PlanType, { name: string; tag: string; tone: string; n
     tone: 'pink',
     normalPrice: 'R$ 197,90',
   },
+}
+
+const checkoutPlanPaths: Record<PlanType, string> = {
+  weekly: '/paysemanal',
+  monthly: '/paymensal',
+  lifetime: '/payvitalicio',
 }
 
 const planFeatures = [
@@ -216,48 +221,54 @@ type PosterPlanItem =
   | { label: string; action: 'features' }
   | { label: string; detail?: string; tone?: 'positive' | 'negative' }
 
-function getPosterPlanItems(
-  pluginIncluded: boolean,
+const posterPlanSummaryItems: PosterPlanItem[] = [
+  { label: `Mais de ${planFeatureDisplayCount} funcoes`, action: 'features' },
+  { label: 'Ant-ban e ant-blacklist' },
+  { label: 'Atualizacoes semanais gratuitas' },
+  { label: 'Suporte prioritario' },
+]
+
+function getPosterPlanDetailItems(
+  pluginReady: boolean,
   selectedDevice: DeviceType | '' | undefined,
   paidPlan: PlanType | '' | undefined,
   plan: PlanType,
 ): PosterPlanItem[] {
-  const pluginLooksIncluded = selectedDevice === 'ios' ? true : pluginIncluded
-  const items: PosterPlanItem[] = [
-    { label: `Mais de ${planFeatureDisplayCount} funcoes`, action: 'features' },
-    { label: 'Ant-ban e ant-blacklist' },
-    { label: 'Atualizacoes semanais gratuitas' },
-    { label: 'Suporte prioritario' },
-    {
-      label: pluginLooksIncluded ? 'Plugin Service Sync incluso' : 'Plugin Service Sync nao incluso',
-      detail: pluginLooksIncluded
-        ? ''
-        : 'O xit so funciona com plugin. Verifique com o vendedor detalhes desse plugin; nao fazemos reembolso relacionado a plugin.',
-      tone: pluginLooksIncluded ? 'positive' : 'negative',
-    },
-    { label: 'Tutorial de instalacao e uso' },
-    { label: 'Recebimento automatico apos mandar comprovante' },
-    { label: 'Mais controle para jogar apostado' },
-  ]
+  const items: PosterPlanItem[] = []
 
   if (selectedDevice === 'ios') {
-    const shouldWarnWeeklyAfterPurchase = paidPlan === 'weekly' && plan === 'weekly'
-    const shouldWarnMonthlyAfterPurchase =
-      paidPlan === 'monthly' && (plan === 'weekly' || plan === 'monthly')
+    const iosWarning =
+      paidPlan === 'weekly' && plan === 'weekly'
+        ? 'Aviso importante: o plano Semanal nao e compativel com iOS. Antes de comprar outro plano, confira que para iOS e necessario o Mensal ou Permanente. Como o Semanal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Semanal so sera tratado apos adquirir um plano compativel.'
+        : paidPlan === 'monthly' && plan === 'weekly'
+          ? 'Aviso importante: o plano Semanal nao e compativel com iOS. Como esta conta ja tem o Mensal identificado e para iOS o plano compativel e o Permanente, evite comprar o Semanal; qualquer ajuste ou reembolso so sera tratado apos adquirir o Permanente.'
+          : paidPlan === 'monthly' && plan === 'monthly'
+            ? 'Aviso importante: o plano Mensal nao libera o uso completo nesta conta iOS. Antes de comprar outro plano, confira que para iOS o plano compativel e o Permanente. Como o Mensal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Mensal so sera tratado apos adquirir o Permanente.'
+            : ''
 
-    if (shouldWarnWeeklyAfterPurchase || shouldWarnMonthlyAfterPurchase) {
-      items.splice(4, 0, {
+    if (iosWarning) {
+      items.push({
         label: 'Este plano nao funciona para iOS',
-        detail:
-          paidPlan === 'weekly'
-            ? 'Aviso importante: o plano Semanal nao e compativel com iOS. Antes de comprar outro plano, confira que para iOS e necessario o Mensal ou Permanente. Como o Semanal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Semanal so sera tratado apos adquirir um plano compativel.'
-            : 'Aviso importante: o plano Mensal nao libera o uso completo nesta conta iOS. Antes de comprar outro plano, confira que para iOS o plano compativel e o Permanente. Como o Mensal ja foi identificado nesta conta, qualquer ajuste ou reembolso do Mensal so sera tratado apos adquirir o Permanente.',
+        detail: iosWarning,
         tone: 'negative',
       })
     }
   }
 
-  return items
+  return [
+    ...items,
+    {
+      label: pluginReady ? 'Plugin ativo' : 'Plugin nao incluso',
+      detail: pluginReady
+        ? 'Liberado nesta conta.'
+        : 'Necessario para o xit funcionar. Verifique com vendedor antes da compra.',
+      tone: pluginReady ? 'positive' : 'negative',
+    },
+    { label: 'Tutorial de instalacao e uso' },
+    { label: 'Recebimento automatico apos mandar comprovante' },
+    { label: 'Mais controle para jogar apostado' },
+    { label: 'Acesso vinculado ao WhatsApp cadastrado' },
+  ]
 }
 
 const planDealMap: Record<PlanType, { duration: string; discount: string; note: string; realPrice: string }> = {
@@ -340,21 +351,11 @@ const pluginModules = [
 ]
 
 function normalizePhone(value: string) {
-  const digits = value.replace(/\D/g, '').slice(0, 15)
-  return digits.length === 13 && digits.startsWith('55') ? digits.slice(2) : digits
+  return normalizeBrazilPhone(value)
 }
 
 function formatPhone(value: string) {
-  const digits = normalizePhone(value)
-  if (digits.length <= 2) return digits
-  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`
-}
-
-function maskPassword(value: string) {
-  const clean = value.trim()
-  if (!clean) return ''
-  return `${clean.slice(0, 1)}${'*'.repeat(Math.max(clean.length - 1, 3))}`
+  return formatBrazilPhone(value)
 }
 
 function validatePhone(phone: string) {
@@ -411,13 +412,17 @@ function isPluginActive(chat: Chat | null) {
   return chat?.plugin?.status === 'active' || (chat?.payment?.status === 'paid' && chat.payment.plan === 'plugin')
 }
 
+function isPluginReady(chat: Chat | null, selectedDevice: DeviceType | '') {
+  return selectedDevice === 'ios' || isPluginActive(chat) || chat?.plugin?.included === true
+}
+
 function getSelectedDevice(chat: Chat | null, selectedDevice: DeviceType | '') {
   return selectedDevice || chat?.leadProfile?.device || ''
 }
 
 function getDownloadButtonLabel(device: DeviceType | '') {
   if (device === 'android' || device === 'emulator') {
-    return `ABAIXAR XIT ${deviceDownloadLabelMap[device]}`
+    return 'ABAIXAR XIT'
   }
 
   return 'VOCE POSSUI ESTE PLANO'
@@ -440,7 +445,7 @@ function makeApprovalNotice(chat: Chat | null): PaymentNotice | null {
     code,
     target: paidTarget,
     title: 'Pagamento aprovado',
-    text: `${label} confirmado. Use o codigo abaixo se precisar identificar essa compra no atendimento ou no admin.`,
+    text: `${label} confirmado. Use o codigo abaixo se precisar identificar essa compra no Gordin du Xit ou no admin.`,
   }
 }
 
@@ -455,14 +460,11 @@ function AuthScreen({
   error: string
   onSubmit: (phone: string, password: string, device: DeviceType, mode: AuthMode) => Promise<{ message?: string; switchTo?: AuthMode } | void>
 }) {
-  const [mode, setMode] = useState<AuthMode>('signup')
   const [phone, setPhone] = useState(formatPhone(defaultPhone))
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [device, setDevice] = useState<DeviceType>('android')
+  const [device, setDevice] = useState<DeviceType | ''>('')
   const [formError, setFormError] = useState('')
   const [confirmDeviceOpen, setConfirmDeviceOpen] = useState(false)
-  const selectedDeviceOption = deviceOptions.find((option) => option.value === device) || deviceOptions[0]
+  const selectedDeviceOption = deviceOptions.find((option) => option.value === device)
 
   useEffect(() => {
     if (error) setFormError(error)
@@ -470,22 +472,22 @@ function AuthScreen({
 
   function validateAuthForm() {
     const phoneError = validatePhone(phone)
-    const passwordError = validatePassword(password)
-    const confirmError = mode === 'signup' && password !== confirmPassword ? 'As senhas nao conferem.' : ''
-    const nextError = phoneError || passwordError || confirmError
+    const nextError = phoneError || (!device ? 'Escolha seu dispositivo para continuar.' : '')
 
     setFormError(nextError)
     return !nextError
   }
 
   async function submitAccess() {
+    if (!device) {
+      setFormError('Escolha seu dispositivo para continuar.')
+      setConfirmDeviceOpen(false)
+      return
+    }
+
     setConfirmDeviceOpen(false)
 
-    const result = await onSubmit(normalizePhone(phone), password.trim(), device, mode)
-    if (result?.switchTo) {
-      setMode(result.switchTo)
-      setConfirmPassword('')
-    }
+    const result = await onSubmit(normalizePhone(phone), '', device, 'signup')
     if (result?.message) setFormError(result.message)
   }
 
@@ -515,80 +517,28 @@ function AuthScreen({
           <i />
         </div>
         <div className="portal-auth-copy">
-          <span className="ffp-badge">Xit do Gordin | Area do cliente</span>
-          <h1>{mode === 'signup' ? 'CRIAR' : 'ENTRAR'}</h1>
-          <p>Seu acesso fica ligado ao WhatsApp, senha e dispositivo escolhido.</p>
-        </div>
-
-        <div className="portal-auth-tabs" role="tablist" aria-label="Tipo de acesso">
-          <button
-            type="button"
-            className={mode === 'signup' ? 'active' : ''}
-            onClick={() => {
-              setMode('signup')
-              setConfirmDeviceOpen(false)
-            }}
-          >
-            CRIAR
-          </button>
-          <button
-            type="button"
-            className={mode === 'login' ? 'active' : ''}
-            onClick={() => {
-              setMode('login')
-              setConfirmDeviceOpen(false)
-            }}
-          >
-            ENTRAR
-          </button>
+          <h1>Qual seu numero de WhatsApp</h1>
+          <p>Precisamos saber seu WhatsApp para poder mandar o xit.</p>
         </div>
 
         <form className="portal-auth-form" onSubmit={handleSubmit}>
           <label>
-            <span>Numero de WhatsApp</span>
-            <input
-              value={phone}
-              onChange={(event) => {
-                setPhone(formatPhone(event.target.value))
-                setFormError('')
-                setConfirmDeviceOpen(false)
-              }}
-              inputMode="tel"
-              autoComplete="tel"
-              placeholder="(11) 99999-9999"
-            />
-          </label>
-
-          <label>
-            <span>Senha</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => {
-                setPassword(event.target.value)
-                setFormError('')
-                setConfirmDeviceOpen(false)
-              }}
-              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-              placeholder="Digite sua senha"
-            />
-          </label>
-
-          {mode === 'signup' && (
-            <label>
-              <span>Confirmar senha</span>
+            <span>WhatsApp</span>
+            <div className="portal-phone-input">
+              <b>+55</b>
               <input
-                type="password"
-                value={confirmPassword}
+                value={phone}
                 onChange={(event) => {
-                  setConfirmPassword(event.target.value)
+                  setPhone(formatPhone(event.target.value))
+                  setFormError('')
                   setConfirmDeviceOpen(false)
                 }}
-                autoComplete="new-password"
-                placeholder="Repita sua senha"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="(11) 99999-9999"
               />
-            </label>
-          )}
+            </div>
+          </label>
 
           <fieldset className="portal-device-field">
             <legend>Escolha seu dispositivo</legend>
@@ -597,24 +547,25 @@ function AuthScreen({
                 <button
                   key={option.value}
                   type="button"
-                  className={device === option.value ? 'active' : ''}
+                  className={`portal-device-button ${device === option.value ? 'active' : ''}`}
+                  aria-pressed={device === option.value}
                   onClick={() => {
                     setDevice(option.value)
+                    setFormError('')
                     setConfirmDeviceOpen(false)
                   }}
-                >
-                  <DeviceGlyph device={option.value} />
-                  <strong>{option.label}</strong>
-                  <small>{option.detail}</small>
-                </button>
-              ))}
-            </div>
+                  >
+                    <DeviceGlyph device={option.value} />
+                    <strong>{option.label}</strong>
+                  </button>
+                ))}
+              </div>
           </fieldset>
 
           {formError && <strong className="portal-form-error">{formError}</strong>}
 
           <button className="portal-auth-submit" type="submit" disabled={loading}>
-            {loading ? 'AGUARDE...' : mode === 'signup' ? 'CRIAR' : 'ENTRAR'}
+            {loading ? 'AGUARDE...' : 'CONTINUAR ->'}
           </button>
         </form>
 
@@ -640,25 +591,35 @@ function AuthScreen({
             >
               X
             </button>
-            <span>Confirmacoes de dados</span>
-            <h2>Confira antes de continuar</h2>
+            <span>Conferir dados</span>
+            <h2>Esta tudo certo?</h2>
+            <p className="portal-auth-confirm-note">Use esse mesmo numero para entrar no xit depois.</p>
             <div className="portal-auth-confirm-data">
               <p>
-                <small>Numero</small>
-                <strong>{formatPhone(normalizePhone(phone))}</strong>
+                <i className="portal-auth-confirm-icon">+55</i>
+                <span>
+                  <small>WhatsApp</small>
+                  <strong>{formatBrazilPhone(normalizePhone(phone), { countryCode: true })}</strong>
+                </span>
               </p>
-              <p>
-                <small>Senha</small>
-                <strong>{maskPassword(password)}</strong>
-              </p>
-              <p>
-                <small>Dispositivo</small>
-                <strong>{selectedDeviceOption.label}</strong>
+              <p className="portal-auth-confirm-device">
+                <i className="portal-auth-confirm-icon">
+                  {selectedDeviceOption ? <DeviceGlyph device={selectedDeviceOption.value} /> : null}
+                </i>
+                <span>
+                  <small>Dispositivo</small>
+                  <strong>{selectedDeviceOption?.label}</strong>
+                </span>
               </p>
             </div>
-            <button className="portal-auth-confirm-submit" type="button" onClick={submitAccess} disabled={loading}>
-              Confirmar
-            </button>
+            <div className="portal-auth-confirm-actions">
+              <button className="portal-auth-confirm-edit" type="button" onClick={() => setConfirmDeviceOpen(false)}>
+                Editar
+              </button>
+              <button className="portal-auth-confirm-submit" type="button" onClick={submitAccess} disabled={loading}>
+                Confirmar
+              </button>
+            </div>
           </div>
         </section>
       )}
@@ -693,115 +654,6 @@ function DeviceGlyph({ device }: { device: DeviceType }) {
       <rect x="8" y="10" width="32" height="22" rx="3" />
       <path d="M20 38h8M24 32v6" />
     </svg>
-  )
-}
-
-function AccountMenu({
-  chat,
-  phone,
-  device,
-  onLogout,
-}: {
-  chat: Chat | null
-  phone: string
-  device: DeviceType | ''
-  onLogout: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const activePlan = getActivePlan(chat)
-  const purchaseCode = getPurchaseCode(chat)
-  const pluginActive = isPluginActive(chat)
-
-  return (
-    <div className="portal-account-menu">
-      <button
-        className="portal-dots-button"
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-label="Abrir informacoes da conta"
-        aria-expanded={open}
-      >
-        <span />
-        <span />
-        <span />
-      </button>
-
-      {open && (
-        <div className="portal-account-popover" role="dialog" aria-label="Informacoes da conta">
-          <div className="portal-account-head">
-            <span>Conta conectada</span>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Fechar">
-              X
-            </button>
-          </div>
-
-          <div className="portal-account-card">
-            <small>Numero de WhatsApp</small>
-            <strong>{formatPhone(phone)}</strong>
-          </div>
-
-          <div className="portal-account-grid">
-            <div>
-              <small>Dispositivo</small>
-              <strong>{device ? deviceLabelMap[device] : 'Nao escolhido'}</strong>
-            </div>
-            <div>
-              <small>Plano</small>
-              <strong>{activePlan ? planOptions.find((plan) => plan.value === activePlan)?.label : 'Sem plano ativo'}</strong>
-            </div>
-            <div>
-              <small>Plugin</small>
-              <strong>{pluginActive ? 'Ativo' : 'Pendente'}</strong>
-            </div>
-            <div>
-              <small>Compra</small>
-              <strong>{purchaseCode || 'Sem codigo'}</strong>
-            </div>
-          </div>
-
-          <button className="portal-account-logout" type="button" onClick={onLogout}>
-            Sair da conta
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PortalHeader({
-  tab,
-  canOpenPlugin,
-  phone,
-  device,
-  onLogout,
-}: {
-  tab: PortalTab
-  canOpenPlugin: boolean
-  phone: string
-  device: DeviceType | ''
-  onLogout: () => void
-}) {
-  return (
-    <header className="portal-topbar">
-      <div>
-        <span>Logado como</span>
-        <strong>{formatPhone(phone)}</strong>
-        {device && <small>{deviceLabelMap[device]}</small>}
-      </div>
-      <nav aria-label="Area do cliente">
-        <a className={tab === 'plans' ? 'active' : ''} href="/planos">
-          Planos
-        </a>
-        {canOpenPlugin && (
-          <a className={tab === 'plugins' ? 'active' : ''} href="/plugins">
-            Plugin
-          </a>
-        )}
-      </nav>
-      <button type="button" onClick={onLogout}>
-        Sair
-      </button>
-    </header>
   )
 }
 
@@ -903,24 +755,20 @@ function PlansPageOld({
 function PlansPage({
   chat,
   canOpenPlugin,
-  phone,
   selectedDevice,
   selectedPlan,
   saving,
   paymentLinks,
-  onLogout,
   onBuy,
   onDownload,
 }: {
   chat: Chat | null
   canOpenPlugin: boolean
-  phone: string
   selectedDevice: DeviceType | ''
   selectedPlan: PlanType | ''
   saving: boolean
   paymentLinks: Record<PlanType, string>
   paymentProvider: PaymentProvider
-  onLogout: () => void
   onBuy: (target: PaymentTarget, link: string, label: string) => void
   onDownload: () => void
 }) {
@@ -928,6 +776,7 @@ function PlansPage({
   const purchaseCode = getPurchaseCode(chat)
   const device = getSelectedDevice(chat, selectedDevice)
   const [showAllFeatures, setShowAllFeatures] = useState(false)
+  const [expandedPlanDetails, setExpandedPlanDetails] = useState<PlanType | ''>('')
   const [recentPurchaseIndex, setRecentPurchaseIndex] = useState(0)
   const [livePlanStats, setLivePlanStats] = useState(initialPlanSocialStats)
   const lastAppliedPlanPurchaseIndex = useRef(0)
@@ -978,24 +827,22 @@ function PlansPage({
             <span className="ffp-ring ffp-ring-b" />
           </div>
 
-          <header className={`ffp-controls portal-ffp-controls ${canOpenPlugin ? '' : 'no-switch'}`}>
-            {canOpenPlugin && (
+          {canOpenPlugin && (
+            <header className="ffp-controls portal-ffp-controls">
               <nav className="portal-mode-switch" aria-label="Area do cliente">
                 <a className="active" href="/planos">Planos</a>
                 <a href="/plugins">Plugin</a>
               </nav>
-            )}
-            <AccountMenu chat={chat} phone={phone} device={device} onLogout={onLogout} />
-          </header>
+            </header>
+          )}
 
           <div className="ffp-content">
             <section className="ffp-hero">
-              <span className="ffp-badge">Xit do Gordin | Ant-ban</span>
               <h3>
                 Eleve
+                {' '}
                 <strong>seu jogo</strong>
               </h3>
-              <p>Mais de 3 anos xitando geral.</p>
             </section>
 
             <div className="ffp-main-grid">
@@ -1006,7 +853,7 @@ function PlansPage({
                   <span className="ffp-cyber-mask" />
                   <span className="ffp-cyber-eye eye-a" />
                   <span className="ffp-cyber-eye eye-b" />
-                  <span className="ffp-cyber-chest">XIT <b>GORDIN</b></span>
+                  <span className="ffp-cyber-chest">GORDIN <b>XIT</b></span>
                   <span className="ffp-cyber-arm arm-a" />
                   <span className="ffp-cyber-arm arm-b" />
                   <span className="ffp-cyber-leg leg-a" />
@@ -1021,13 +868,15 @@ function PlansPage({
                   const deal = planDealMap[option.value]
                   const social = livePlanStats[option.value]
                   const isOwned = activePlan === option.value
+                  const canOpenDetails = Boolean(activePlan)
                   const isSelected = selectedPlan === option.value || chat?.selectedPlan?.plan === option.value
-                  const posterPlanItems = getPosterPlanItems(
-                    chat?.plugin?.included !== false,
+                  const posterPlanDetailItems = getPosterPlanDetailItems(
+                    isPluginReady(chat, device),
                     device,
                     activePlan,
                     option.value,
                   )
+                  const detailsOpen = canOpenDetails && expandedPlanDetails === option.value
                   const [priceMain, priceCents = '00'] = option.priceLabel.replace('R$ ', '').split(',')
                   const paymentLink = paymentLinks[option.value]
 
@@ -1048,7 +897,7 @@ function PlansPage({
                       </div>
 
                       <div className="ffp-item-list">
-                        {posterPlanItems.map((item) =>
+                        {posterPlanSummaryItems.map((item) =>
                           'action' in item && item.action === 'features' ? (
                             <button
                               type="button"
@@ -1072,6 +921,31 @@ function PlansPage({
                             </span>
                           ),
                         )}
+                        <button
+                          type="button"
+                          className={`ffp-feature-link ffp-more-link ${!canOpenDetails ? 'locked' : ''}`}
+                          onClick={() => {
+                            if (!canOpenDetails) return
+                            setExpandedPlanDetails((current) => (current === option.value ? '' : option.value))
+                          }}
+                          disabled={!canOpenDetails}
+                          aria-disabled={!canOpenDetails}
+                        >
+                          <i aria-hidden="true" />
+                          <b>{detailsOpen ? 'Mostrar menos' : 'Ver mais'}</b>
+                          <em aria-hidden="true">&gt;</em>
+                        </button>
+                        {detailsOpen &&
+                          posterPlanDetailItems.map((item) => (
+                            <span
+                              key={`${option.value}-detail-${item.label}`}
+                              className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
+                            >
+                              <i aria-hidden="true" />
+                              <b>{item.label}</b>
+                              {'detail' in item && item.detail && <small>{item.detail}</small>}
+                            </span>
+                          ))}
                       </div>
 
                       <div className="ffp-price">
@@ -1185,6 +1059,211 @@ function PlansPage({
   )
 }
 
+function PlanCheckoutPage({
+  chat,
+  plan,
+  canOpenPlugin,
+  selectedDevice,
+  selectedPlan,
+  saving,
+  paymentLinks,
+  onBuy,
+}: {
+  chat: Chat | null
+  plan: PlanType
+  canOpenPlugin: boolean
+  selectedDevice: DeviceType | ''
+  selectedPlan: PlanType | ''
+  saving: boolean
+  paymentLinks: Record<PlanType, string>
+  onBuy: (target: PaymentTarget, link: string, label: string) => void
+}) {
+  const activePlan = getActivePlan(chat)
+  const purchaseCode = getPurchaseCode(chat)
+  const device = getSelectedDevice(chat, selectedDevice)
+  const option = planOptions.find((item) => item.value === plan) || planOptions[0]
+  const visual = gamePlanVisuals[plan]
+  const deal = planDealMap[plan]
+  const isOwned = activePlan === plan
+  const isSelected = selectedPlan === plan || chat?.selectedPlan?.plan === plan
+  const canOpenDetails = Boolean(activePlan)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [showAllFeatures, setShowAllFeatures] = useState(false)
+  const visibleDetailsOpen = canOpenDetails && detailsOpen
+  const posterPlanDetailItems = getPosterPlanDetailItems(isPluginReady(chat, device), device, activePlan, plan)
+  const [priceMain, priceCents = '00'] = option.priceLabel.replace('R$ ', '').split(',')
+  const paymentLink = paymentLinks[plan]
+
+  return (
+    <div className="plan-fullscreen ffp-modal portal-ffp-page portal-checkout-page" role="region" aria-label={`Comprar plano ${option.label}`}>
+      <main className="ffp-page">
+        <section className="ffp-poster">
+          <div className="ffp-bg" aria-hidden="true">
+            {planPosterSparks.map((spark) => (
+              <span
+                key={spark.id}
+                className="ffp-spark"
+                style={
+                  {
+                    '--spark-left': spark.left,
+                    '--spark-top': spark.top,
+                    '--spark-delay': spark.delay,
+                    '--spark-size': spark.size,
+                  } as CSSProperties
+                }
+              />
+            ))}
+            <span className="ffp-ring ffp-ring-a" />
+            <span className="ffp-ring ffp-ring-b" />
+          </div>
+
+          {canOpenPlugin && (
+            <header className="ffp-controls portal-ffp-controls">
+              <nav className="portal-mode-switch" aria-label="Area do cliente">
+                <a className="active" href={`/pay${plan === 'weekly' ? 'semanal' : plan === 'monthly' ? 'mensal' : 'vitalicio'}`}>Plano</a>
+                <a href="/plugins">Plugin</a>
+              </nav>
+            </header>
+          )}
+
+          <div className="ffp-content">
+            <div className="ffp-main-grid portal-checkout-grid">
+              <div className="ffp-card-list" aria-label={`Detalhes do plano ${option.label}`}>
+                <article
+                  className={`ffp-price-card ${visual.theme} ${isSelected || isOwned ? 'selected' : ''} ${isOwned ? 'portal-owned-plan' : ''}`}
+                >
+                  <div className="ffp-plan-head">
+                    <span className="ffp-plan-icon" aria-hidden="true" />
+                    <div>
+                      <span>Plano</span>
+                      <h4>{visual.displayName}</h4>
+                      <small>{visual.tag}</small>
+                    </div>
+                  </div>
+
+                  <div className="ffp-item-list">
+                    {posterPlanSummaryItems.map((item) =>
+                      'action' in item && item.action === 'features' ? (
+                        <button
+                          type="button"
+                          className="ffp-feature-link"
+                          key={`${option.value}-${item.label}`}
+                          onClick={() => setShowAllFeatures(true)}
+                          aria-label="Ver lista completa de funcoes"
+                        >
+                          <i aria-hidden="true" />
+                          <b>{item.label}</b>
+                          <em aria-hidden="true">&gt;</em>
+                        </button>
+                      ) : (
+                        <span
+                          key={`${option.value}-${item.label}`}
+                          className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
+                        >
+                          <i aria-hidden="true" />
+                          <b>{item.label}</b>
+                          {'detail' in item && item.detail && <small>{item.detail}</small>}
+                        </span>
+                      ),
+                    )}
+                    <button
+                      type="button"
+                      className={`ffp-feature-link ffp-more-link ${!canOpenDetails ? 'locked' : ''}`}
+                      onClick={() => {
+                        if (!canOpenDetails) return
+                        setDetailsOpen((current) => !current)
+                      }}
+                      disabled={!canOpenDetails}
+                      aria-disabled={!canOpenDetails}
+                    >
+                      <i aria-hidden="true" />
+                      <b>{visibleDetailsOpen ? 'Mostrar menos' : 'Ver mais'}</b>
+                      <em aria-hidden="true">&gt;</em>
+                    </button>
+                    {visibleDetailsOpen &&
+                      posterPlanDetailItems.map((item) => (
+                        <span
+                          key={`${option.value}-detail-${item.label}`}
+                          className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
+                        >
+                          <i aria-hidden="true" />
+                          <b>{item.label}</b>
+                          {'detail' in item && item.detail && <small>{item.detail}</small>}
+                        </span>
+                      ))}
+                  </div>
+
+                  <div className="ffp-price">
+                    <div className="ffp-price-compare">
+                      <span>Valor normal</span>
+                      <s>{deal.realPrice}</s>
+                    </div>
+                    <div className="ffp-price-row">
+                      <div className="ffp-price-value" aria-label={`${option.priceLabel} - ${deal.duration}`}>
+                        <em>Por</em>
+                        <span>R$</span>
+                        <strong>{priceMain}</strong>
+                        <b>,{priceCents}</b>
+                      </div>
+                      <small>{deal.duration}</small>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`ffp-buy-button portal-checkout-submit ${isOwned ? 'portal-owned-button owned' : ''}`}
+                    onClick={() => onBuy(plan, paymentLink, `Comprar ${option.label}`)}
+                    disabled={saving || isOwned || !paymentLink}
+                  >
+                    {!paymentLink ? 'Link indisponivel' : isOwned ? 'Voce possui este plano' : 'Continuar ->'}
+                  </button>
+
+                  <p className="portal-checkout-secure">Pagamento 100% seguro, processado com criptografia 128bits.</p>
+
+                  {isOwned && purchaseCode && (
+                    <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
+                  )}
+                </article>
+              </div>
+            </div>
+
+            <div className="ffp-bottom-spacer" aria-hidden="true" />
+          </div>
+        </section>
+      </main>
+
+      {showAllFeatures && (
+        <div className="ffp-feature-overlay" onClick={() => setShowAllFeatures(false)}>
+          <div className="ffp-feature-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="ffp-feature-panel-head">
+              <div>
+                <span>Recursos inclusos</span>
+                <h3>Mais de {planFeatureDisplayCount} funcoes</h3>
+                <p>{planFeatureCount} funcoes organizadas por categoria.</p>
+              </div>
+              <button type="button" onClick={() => setShowAllFeatures(false)} aria-label="Fechar lista de funcoes">
+                X
+              </button>
+            </div>
+            <div className="ffp-feature-grid">
+              {showcaseSections.map((section) => (
+                <section key={section.title}>
+                  <h4>{section.title}</h4>
+                  <ul>
+                    {section.items.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PluginPageOld({
   chat,
   saving,
@@ -1247,20 +1326,16 @@ function PluginPageOld({
 
 function PluginPage({
   chat,
-  phone,
-  device,
   saving,
   pluginLink,
-  onLogout,
   onBuy,
+  onBack,
 }: {
   chat: Chat | null
-  phone: string
-  device: DeviceType | ''
   saving: boolean
   pluginLink: string
-  onLogout: () => void
   onBuy: (target: PaymentTarget, link: string, label: string) => void
+  onBack: () => void
 }) {
   const active = isPluginActive(chat)
   const purchaseCode = getPurchaseCode(chat)
@@ -1312,20 +1387,19 @@ function PluginPage({
 
           <header className="ffp-controls portal-ffp-controls">
             <nav className="portal-mode-switch" aria-label="Area do cliente">
-              <a href="/planos">Planos</a>
+              <button className="portal-plugin-back" type="button" onClick={onBack}>Voltar</button>
               <a className="active" href="/plugins">Plugin</a>
             </nav>
-            <AccountMenu chat={chat} phone={phone} device={device} onLogout={onLogout} />
           </header>
 
           <div className="ffp-content">
             <section className="ffp-hero">
-              <span className="ffp-badge">Service Sync Core, depois disso nao precisa pagar por mais nada</span>
+              <span className="ffp-badge">Gordin du Xit | ServiceSync Core</span>
               <h3>
-                Libere
-                <strong>o modulo</strong>
+                Plugin
+                <strong>ServiceSync</strong>
               </h3>
-              <p>O ServiceSync Core fecha a sincronizacao tecnica da conta, libera todas as funcoes e deixa o xit pronto para jogar.</p>
+              <p>Ativacao extra para fechar a sincronizacao do Gordin du Xit, liberar o modulo pendente e deixar a conta pronta para jogar.</p>
             </section>
 
             <div className="ffp-main-grid portal-plugin-grid">
@@ -1359,7 +1433,7 @@ function PluginPage({
 
                   <div className="portal-plugin-progress">
                     <div>
-                      <span>Semanal → Permanente</span>
+                      <span>Conta protegida</span>
                       <strong>{active ? 'liberado' : 'quase pronto'}</strong>
                     </div>
                     <i aria-hidden="true" />
@@ -1370,7 +1444,7 @@ function PluginPage({
                       'Todas as funcoes do xit liberadas',
                       'Execucao completa sem erro de sincronizacao',
                       'Conta pronta para jogar apos a confirmacao',
-                      'Plano convertido de Semanal → Permanente',
+                      'ServiceSync Core ativado nesta conta',
                       'Uso vitalicio com atualizacoes gratuitas',
                     ].map((item) => (
                       <span key={item}>
@@ -1477,7 +1551,7 @@ function PluginPage({
               <div>
                 <small>Plugin ao vivo</small>
                 <strong>{recentPluginPurchase.name} ativou agora</strong>
-                <span>{recentPluginPurchase.phone} - Service Sync Core liberado.</span>
+                <span>{recentPluginPurchase.phone} - ServiceSync Core liberado.</span>
               </div>
             </div>
           </div>
@@ -1512,6 +1586,209 @@ function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: ()
   )
 }
 
+function DownloadPage({
+  chat,
+  selectedDevice,
+  settings,
+  onBack,
+  onDownloadClick,
+}: {
+  chat: Chat | null
+  selectedDevice: DeviceType | ''
+  settings: AppUpdateSettings
+  onBack: () => void
+  onDownloadClick: () => void
+}) {
+  const device = getSelectedDevice(chat, selectedDevice)
+  const activePlan = getActivePlan(chat)
+  const planName = activePlan ? gamePlanVisuals[activePlan].displayName : 'Sem plano ativo'
+  const accountLogin = chat?.accessUsername || ''
+  const [copiedLogin, setCopiedLogin] = useState(false)
+  const hasDownload = Boolean(settings.apkUrl)
+  const downloadEnabled = canDownloadXit(device) && Boolean(activePlan) && hasDownload
+  const noActivePlanMessage = 'Obtenha um plano ativo primeiro. O download do xit so fica disponivel apos um plano ativo.'
+  const unavailableMessage = !activePlan
+    ? noActivePlanMessage
+    : device === 'ios'
+      ? `Download do xit nao esta disponivel para o plano adquirido (${planName}). Verifique com o vendedor antes de tentar instalar.`
+      : !canDownloadXit(device)
+        ? 'Este dispositivo nao possui download liberado nesta pagina. Verifique com o vendedor antes de tentar instalar.'
+        : 'Link de download ainda nao cadastrado. Verifique com o vendedor.'
+  const tutorial = downloadEnabled
+    ? downloadTutorials[device]
+    : activePlan && device === 'ios'
+      ? [
+          `O plano adquirido e ${planName}, mas o download do xit nao esta disponivel para iOS nesta pagina.`,
+          'Verifique com o vendedor antes de tentar instalar qualquer arquivo.',
+          'Mantenha seu WhatsApp autenticado para conferir liberacao, troca de plano ou orientacao correta.',
+        ]
+      : [
+          'Autentique seu WhatsApp no Gordin du Xit.',
+          'Obtenha um plano ativo antes de tentar baixar.',
+          'Volte nesta pagina quando o plano estiver ativo para liberar o download.',
+        ]
+  async function handleCopyLogin() {
+    if (!accountLogin) {
+      return
+    }
+
+    function copyWithTemporaryInput() {
+      const input = document.createElement('textarea')
+      input.value = accountLogin
+      input.setAttribute('readonly', 'true')
+      input.style.position = 'fixed'
+      input.style.left = '-9999px'
+      input.style.top = '0'
+      document.body.appendChild(input)
+      input.focus()
+      input.select()
+      input.setSelectionRange(0, accountLogin.length)
+
+      try {
+        document.execCommand('copy')
+        return true
+      } finally {
+        document.body.removeChild(input)
+      }
+    }
+
+    let copied = false
+
+    try {
+      copied = copyWithTemporaryInput()
+    } catch {
+      copied = false
+    }
+
+    if (!copied) {
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error('clipboard unavailable')
+        }
+
+        await Promise.race([
+          navigator.clipboard.writeText(accountLogin),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('clipboard timeout')), 250)
+          }),
+        ])
+        copied = true
+      } catch {
+        copied = false
+      }
+    }
+
+    if (!copied) {
+      copied = true
+    }
+
+    if (copied) {
+      setCopiedLogin(true)
+      window.setTimeout(() => setCopiedLogin(false), 1600)
+    } else {
+      setCopiedLogin(false)
+    }
+  }
+
+  return (
+    <div className="plan-fullscreen ffp-modal portal-ffp-page portal-download-page" role="region" aria-label="Baixar Gordin du Xit">
+      <main className="ffp-page">
+        <section className="ffp-poster">
+          <div className="ffp-bg" aria-hidden="true">
+            {planPosterSparks.map((spark) => (
+              <span
+                key={spark.id}
+                className="ffp-spark"
+                style={
+                  {
+                    '--spark-left': spark.left,
+                    '--spark-top': spark.top,
+                    '--spark-delay': spark.delay,
+                    '--spark-size': spark.size,
+                  } as CSSProperties
+                }
+              />
+            ))}
+            <span className="ffp-ring ffp-ring-a" />
+            <span className="ffp-ring ffp-ring-b" />
+          </div>
+
+          <header className="ffp-controls portal-ffp-controls">
+            <nav className="portal-mode-switch" aria-label="Navegacao do download">
+              <button className="portal-plugin-back" type="button" onClick={onBack}>Voltar</button>
+              <a className="active" href="/baixar-xit">Download</a>
+            </nav>
+          </header>
+
+          <div className="ffp-content portal-download-content">
+            <section className="ffp-hero portal-download-hero">
+              <h3>
+                <span>BAIXAR</span>
+                {' '}
+                <strong>O XIT</strong>
+              </h3>
+            </section>
+
+            <div className="portal-download-grid">
+              <section className="portal-download-main-card">
+                <div className="portal-download-product">
+                  <span aria-hidden="true">GX</span>
+                  <div>
+                    <small>Versao atual</small>
+                    <strong>{settings.latestVersionName || '1.0'}</strong>
+                  </div>
+                </div>
+
+                {downloadEnabled ? (
+                  <a
+                    className="portal-download-primary"
+                    href={settings.apkUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={onDownloadClick}
+                  >
+                    BAIXAR XIT
+                  </a>
+                ) : (
+                  <p className="portal-download-unavailable">
+                    {unavailableMessage}
+                  </p>
+                )}
+
+                <div className="portal-download-status-grid portal-download-status-compact">
+                  <span className="portal-download-login-item">
+                    <small>Numero para entrar no xit</small>
+                    <b>{accountLogin || 'Autentique seu WhatsApp'}</b>
+                    {accountLogin && (
+                      <button type="button" onClick={handleCopyLogin}>
+                        {copiedLogin ? 'Copiado' : 'Copiar'}
+                      </button>
+                    )}
+                  </span>
+                  <span>
+                    <small>Plano atual</small>
+                    <b>{planName}</b>
+                  </span>
+                </div>
+              </section>
+
+              <section className="portal-download-guide" aria-label="Passos de instalacao">
+                <span>Como instalar</span>
+                <h4>{downloadEnabled ? 'Instalacao limpa' : 'Antes de baixar'}</h4>
+                <ol>
+                  {tutorial.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </section>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  )
+}
+
 function DownloadModal({
   device,
   settings,
@@ -1537,7 +1814,7 @@ function DownloadModal({
       >
         <span>{deviceLabelMap[selectedDevice]}</span>
         <h2>{downloadLabel}</h2>
-        <p>Baixe a versao liberada para sua conta e entre com o mesmo usuario e senha do portal.</p>
+        <p>Baixe a versao liberada para sua conta e entre com o mesmo WhatsApp cadastrado no portal.</p>
 
         <div className="portal-download-info">
           <small>Versao</small>
@@ -1555,7 +1832,7 @@ function DownloadModal({
           </a>
         ) : (
           <p className="portal-download-warning">
-            Link de download ainda nao cadastrado. Chame o suporte no chat privado.
+            Link de download ainda nao cadastrado. Verifique com o vendedor.
           </p>
         )}
 
@@ -1575,20 +1852,28 @@ function DownloadModal({
 
 function NotFoundAccess() {
   return (
-    <main className="portal-shell auth-shell">
-      <section className="portal-auth not-found">
-        <span>404</span>
-        <h1>Pagina nao encontrada</h1>
-      </section>
-      <PortalStyles />
-    </main>
+    <PortalErrorState
+      title="Pagina nao encontrada"
+      text="Esse acesso nao esta disponivel ou nao pertence a esta conta do Gordin du Xit."
+      primaryLabel="Ir para planos"
+      primaryHref="/planos"
+    />
   )
 }
 
-export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab }) {
+export function ClientPortal({
+  initialTab = 'plans',
+  checkoutPlan,
+  downloadPage = false,
+  previewAuth = false,
+}: {
+  initialTab?: PortalTab
+  checkoutPlan?: PlanType
+  downloadPage?: boolean
+  previewAuth?: boolean
+}) {
   const [chatId, setChatId] = useState('')
   const [accountId, setAccountId] = useState('')
-  const [phone, setPhone] = useState('')
   const [selectedDevice, setSelectedDevice] = useState<DeviceType | ''>('')
   const [selectedPlan, setSelectedPlan] = useState<PlanType | ''>('')
   const [chatMeta, setChatMeta] = useState<Chat | null>(null)
@@ -1603,11 +1888,23 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
   const [approvalNotice, setApprovalNotice] = useState<PaymentNotice | null>(null)
   const [appUpdateSettings, setAppUpdateSettings] = useState<AppUpdateSettings>(defaultAppUpdateSettings)
   const [downloadOpen, setDownloadOpen] = useState(false)
+  const [authPreview, setAuthPreview] = useState(previewAuth)
   const activePlan = getActivePlan(chatMeta)
-  const currentPhone = phone || getStoredUsername()
   const currentDevice = getSelectedDevice(chatMeta, selectedDevice)
   const canOpenPlugin = Boolean(activePlan && (currentDevice === 'android' || currentDevice === 'emulator'))
   const visibleTab = initialTab === 'plugins' && canOpenPlugin ? 'plugins' : 'plans'
+  const expectedAuthReturnPath = checkoutPlan
+    ? checkoutPlanPaths[checkoutPlan]
+    : downloadPage
+      ? '/baixar-xit'
+      : initialTab === 'plugins'
+        ? '/plugins'
+        : ''
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setAuthPreview(previewAuth || params.get('preview') === 'login' || params.get('loginPreview') === '1')
+  }, [previewAuth])
 
   useEffect(() => {
     let active = true
@@ -1660,7 +1957,6 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
         const storedChatId = getStoredChatId() || ''
         setChatId(storedChatId)
         setAccountId(getStoredAccountId())
-        setPhone(getStoredUsername())
         setSelectedDevice((storedChatId ? getStoredDevice(storedChatId) : '') as DeviceType | '')
         setSelectedPlan((storedChatId ? getStoredPlan(storedChatId) : '') as PlanType | '')
         setBlockedAccess(false)
@@ -1674,6 +1970,24 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
 
     boot()
   }, [])
+
+  useEffect(() => {
+    if (!downloadPage || !chatId) return undefined
+
+    let active = true
+
+    loadAppUpdateSettings()
+      .then((settings) => {
+        if (active) setAppUpdateSettings(settings)
+      })
+      .catch((settingsError) => {
+        console.error('Nao foi possivel carregar o download do app:', settingsError)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [downloadPage, chatId])
 
   useEffect(() => {
     if (!chatId) {
@@ -1722,7 +2036,6 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
       storeUsername(access.accessUsername)
       setChatId(access.chatId)
       setAccountId(access.accountId)
-      setPhone(access.accessUsername)
 
       const recoveredDevice = access.profile.device || getStoredDevice(access.chatId)
       const recoveredPlan = access.profile.plan || getStoredPlan(access.chatId)
@@ -1743,6 +2056,10 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
       if (recoveredPlan) {
         storePlan(access.chatId, recoveredPlan)
         setSelectedPlan(recoveredPlan)
+      }
+
+      if (expectedAuthReturnPath && window.location.pathname !== expectedAuthReturnPath) {
+        window.history.replaceState(null, '', expectedAuthReturnPath)
       }
     } catch (accessError) {
       const message = accessError instanceof Error ? accessError.message : 'Acesso invalido.'
@@ -1814,14 +2131,6 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
   async function handleOpenDownload() {
     if (!canDownloadXit(currentDevice)) return
 
-    setDownloadOpen(true)
-
-    try {
-      setAppUpdateSettings(await loadAppUpdateSettings())
-    } catch (settingsError) {
-      console.error('Nao foi possivel carregar o download do app:', settingsError)
-    }
-
     if (!chatId || !accountId) return
     registerClientActivity({
       chatId,
@@ -1836,24 +2145,34 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
     }).catch((activityError) => {
       console.error('Nao foi possivel registrar o clique de download:', activityError)
     })
+
+    window.location.assign('/baixar-xit')
   }
 
-  async function handleLogout() {
-    clearClientSession()
-    storeAccountBlocked(false)
-    setChatId('')
-    setAccountId('')
-    setPhone('')
-    setSelectedDevice('')
-    setSelectedPlan('')
-    setChatMeta(null)
-    setApprovalNotice(null)
+  function handleDownloadLinkClick() {
+    if (!chatId || !accountId) return
+    registerClientActivity({
+      chatId,
+      accountId,
+      type: 'button_clicked',
+      label: 'Baixar Gordin du Xit',
+      key: 'download_xit_file',
+      meta: {
+        device: currentDevice || null,
+        version: appUpdateSettings.latestVersionName || null,
+      },
+    }).catch((activityError) => {
+      console.error('Nao foi possivel registrar o download do xit:', activityError)
+    })
+  }
 
-    try {
-      await signOut(auth)
-    } catch (logoutError) {
-      console.error('Nao foi possivel sair:', logoutError)
+  function handleBackFromPlugin() {
+    if (window.history.length > 1) {
+      window.history.back()
+      return
     }
+
+    window.location.assign('/planos')
   }
 
   function closeApprovalNotice() {
@@ -1861,6 +2180,17 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
       setSecureItem(`${approvalKeyPrefix}-${approvalNotice.code}-${approvalNotice.target}`, '1')
     }
     setApprovalNotice(null)
+  }
+
+  if (authPreview) {
+    return (
+      <AuthScreen
+        defaultPhone=""
+        loading={false}
+        error=""
+        onSubmit={async () => ({ message: 'Preview visual: use a pagina normal para entrar.' })}
+      />
+    )
   }
 
   if (blockedAccess) return <NotFoundAccess />
@@ -1880,27 +2210,42 @@ export function ClientPortal({ initialTab = 'plans' }: { initialTab?: PortalTab 
     <main className="portal-shell">
       {error && <div className="portal-error-banner">{error}</div>}
 
-      {visibleTab === 'plugins' ? (
+      {downloadPage ? (
+        <DownloadPage
+          chat={chatMeta}
+          selectedDevice={selectedDevice}
+          settings={appUpdateSettings}
+          onBack={handleBackFromPlugin}
+          onDownloadClick={handleDownloadLinkClick}
+        />
+      ) : checkoutPlan ? (
+        <PlanCheckoutPage
+          chat={chatMeta}
+          plan={checkoutPlan}
+          canOpenPlugin={canOpenPlugin}
+          selectedDevice={selectedDevice}
+          selectedPlan={selectedPlan}
+          saving={saving}
+          paymentLinks={paymentLinks}
+          onBuy={handleBuy}
+        />
+      ) : visibleTab === 'plugins' ? (
         <PluginPage
           chat={chatMeta}
-          phone={currentPhone}
-          device={currentDevice}
           saving={saving}
           pluginLink={pluginPaymentLink}
-          onLogout={handleLogout}
           onBuy={handleBuy}
+          onBack={handleBackFromPlugin}
         />
       ) : (
         <PlansPage
           chat={chatMeta}
           canOpenPlugin={canOpenPlugin}
-          phone={currentPhone}
           selectedDevice={selectedDevice}
           selectedPlan={selectedPlan}
           saving={saving}
           paymentLinks={paymentLinks}
           paymentProvider={paymentProvider}
-          onLogout={handleLogout}
           onBuy={handleBuy}
           onDownload={handleOpenDownload}
         />
@@ -2186,45 +2531,62 @@ function PortalStyles() {
         z-index: 100;
         display: grid;
         place-items: center;
-        background: rgba(2, 6, 23, 0.68);
+        background: rgba(15, 23, 42, 0.58);
         padding: 16px;
-        backdrop-filter: blur(10px);
+        backdrop-filter: blur(12px);
       }
 
       .portal-auth-confirm-modal {
         position: relative;
-        width: min(100%, 420px);
+        width: min(100%, 430px);
         display: grid;
         gap: 12px;
-        border: 1px solid rgba(34, 211, 238, 0.28);
-        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 24px;
         background:
-          radial-gradient(circle at 20% 0%, rgba(34, 211, 238, 0.16), transparent 14rem),
-          #ffffff;
+          radial-gradient(circle at 12% 0%, rgba(20, 184, 166, 0.13), transparent 13rem),
+          radial-gradient(circle at 100% 0%, rgba(249, 115, 22, 0.08), transparent 12rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
         color: #0f172a;
-        padding: 18px;
-        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+        padding: 22px;
+        box-shadow:
+          0 28px 90px rgba(15, 23, 42, 0.34),
+          inset 0 1px 0 rgba(255, 255, 255, 0.94);
       }
 
       .portal-auth-confirm-close {
         position: absolute;
-        top: 10px;
-        right: 10px;
-        width: 34px;
-        height: 34px;
+        top: 14px;
+        right: 14px;
+        width: 36px;
+        height: 36px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
         border-radius: 999px;
-        background: #f1f5f9;
+        background: rgba(255, 255, 255, 0.76);
         color: #0f172a;
         font-size: 12px;
         font-weight: 950;
+        box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
       }
 
       .portal-auth-confirm-modal h2 {
         margin: 0;
         padding-right: 34px;
         color: #0f172a;
-        font-size: 32px;
-        line-height: 0.95;
+        font-size: 30px;
+        line-height: 1.02;
+      }
+
+      .portal-auth-confirm-note {
+        width: fit-content;
+        margin: -4px 0 2px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.56);
+        color: #475569;
+        padding: 6px 9px;
+        font-size: 12px;
+        font-weight: 750;
       }
 
       .portal-auth-confirm-data {
@@ -2234,34 +2596,83 @@ function PortalStyles() {
 
       .portal-auth-confirm-data p {
         margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 11px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+      }
+
+      .portal-auth-confirm-data p > span {
+        min-width: 0;
         display: grid;
-        gap: 4px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        background: #f8fafc;
-        padding: 10px;
+        gap: 3px;
+      }
+
+      .portal-auth-confirm-icon {
+        width: 42px;
+        height: 42px;
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        border-radius: 14px;
+        background: #ecfdf5;
+        color: #0f766e;
+        font-size: 13px;
+        font-style: normal;
+        font-weight: 950;
+      }
+
+      .portal-auth-confirm-icon svg {
+        width: 19px;
+        height: 19px;
+      }
+
+      .portal-auth-confirm-device .portal-auth-confirm-icon {
+        background: #eff6ff;
+        color: #0f172a;
       }
 
       .portal-auth-confirm-data small {
         color: #64748b;
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 950;
         text-transform: uppercase;
       }
 
       .portal-auth-confirm-data strong {
         color: #0f172a;
-        font-size: 17px;
+        font-size: 18px;
+        line-height: 1.08;
         overflow-wrap: anywhere;
       }
 
+      .portal-auth-confirm-actions {
+        display: grid;
+        grid-template-columns: 0.72fr 1fr;
+        gap: 10px;
+      }
+
+      .portal-auth-confirm-edit,
       .portal-auth-confirm-submit {
-        min-height: 48px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, #22c55e, #0ea5e9);
-        color: #021018;
+        min-height: 50px;
+        border-radius: 15px;
         font-weight: 950;
         text-transform: uppercase;
+      }
+
+      .portal-auth-confirm-edit {
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: #ffffff;
+        color: #0f172a;
+      }
+
+      .portal-auth-confirm-submit {
+        background: #0f172a;
+        color: #ffffff;
         box-shadow: 0 14px 30px rgba(14, 165, 233, 0.2);
       }
 
@@ -2784,14 +3195,6 @@ function PortalStyles() {
         pointer-events: auto;
       }
 
-      .portal-ffp-controls.no-switch {
-        justify-content: flex-end !important;
-      }
-
-      .portal-ffp-controls.no-switch .portal-account-menu {
-        position: static !important;
-      }
-
       .portal-ffp-controls a {
         min-height: 38px !important;
         min-width: 54px !important;
@@ -2817,127 +3220,6 @@ function PortalStyles() {
 
       .portal-ffp-page .ffp-badge::before {
         content: none !important;
-      }
-
-      .portal-account-menu {
-        position: absolute !important;
-        right: 0 !important;
-        top: 0 !important;
-        z-index: 120 !important;
-      }
-
-      .portal-dots-button {
-        min-height: 38px !important;
-        width: 38px !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        gap: 3px !important;
-        border: 0 !important;
-        border-radius: 999px !important;
-        background: transparent !important;
-        color: #ffffff !important;
-        padding: 0 6px !important;
-        box-shadow: none !important;
-        backdrop-filter: none !important;
-      }
-
-      .portal-dots-button span {
-        width: 5px;
-        height: 5px;
-        border-radius: 999px;
-        background: currentColor;
-        box-shadow: 0 0 12px rgba(255, 255, 255, 0.35);
-      }
-
-      .portal-account-popover {
-        position: absolute;
-        top: calc(100% + 10px);
-        right: 0;
-        width: min(330px, calc(100vw - 24px));
-        display: grid;
-        gap: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 18px;
-        background:
-          radial-gradient(circle at 18% 0%, rgba(14, 165, 233, 0.18), transparent 46%),
-          linear-gradient(180deg, rgba(18, 22, 40, 0.98), rgba(5, 7, 16, 0.98));
-        color: #ffffff;
-        padding: 12px;
-        box-shadow:
-          0 24px 70px rgba(0, 0, 0, 0.42),
-          inset 0 0 0 1px rgba(255, 255, 255, 0.035);
-        text-align: left;
-      }
-
-      .portal-account-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-      }
-
-      .portal-account-head span,
-      .portal-account-card small,
-      .portal-account-grid small {
-        color: #22d3ee;
-        font-size: 9px;
-        font-weight: 950;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .portal-account-head button {
-        width: 30px;
-        height: 30px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
-        color: #ffffff;
-        font-size: 11px;
-        font-weight: 950;
-      }
-
-      .portal-account-card,
-      .portal-account-grid div {
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.055);
-        padding: 10px;
-      }
-
-      .portal-account-card strong {
-        display: block;
-        margin-top: 3px;
-        color: #ffffff;
-        font-size: 22px;
-        line-height: 1;
-      }
-
-      .portal-account-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-      }
-
-      .portal-account-grid strong {
-        display: block;
-        margin-top: 4px;
-        min-width: 0;
-        overflow-wrap: anywhere;
-        color: rgba(255, 255, 255, 0.9);
-        font-size: 12px;
-        line-height: 1.15;
-      }
-
-      .portal-account-logout {
-        min-height: 42px;
-        border-radius: 12px;
-        background: linear-gradient(135deg, #ef4444, #f97316);
-        color: #ffffff;
-        font-size: 12px;
-        font-weight: 950;
-        text-transform: uppercase;
-        box-shadow: 0 14px 30px rgba(249, 115, 22, 0.22);
       }
 
       .portal-owned-button {
@@ -3204,6 +3486,580 @@ function PortalStyles() {
         box-shadow: 0 10px 18px rgba(34, 197, 94, 0.2);
       }
 
+      .portal-shell,
+      .portal-shell.auth-shell {
+        background:
+          radial-gradient(circle at 12% 0%, rgba(34, 197, 94, 0.12), transparent 24rem),
+          radial-gradient(circle at 90% 8%, rgba(14, 165, 233, 0.1), transparent 24rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 58%, #eef2f7 100%) !important;
+        color: #0f172a !important;
+      }
+
+      .portal-auth {
+        border: 1px solid rgba(15, 23, 42, 0.1) !important;
+        background:
+          radial-gradient(circle at 18% 0%, rgba(34, 197, 94, 0.12), transparent 34%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98)) !important;
+        color: #0f172a !important;
+        box-shadow: 0 24px 70px rgba(15, 23, 42, 0.12) !important;
+      }
+
+      .portal-auth h1,
+      .portal-auth p,
+      .portal-auth-form label span,
+      .portal-device-field legend {
+        color: #0f172a !important;
+      }
+
+      .portal-auth p {
+        color: #475569 !important;
+      }
+
+      .portal-auth-form input,
+      .portal-device-field button,
+      .portal-auth-confirm-modal {
+        border-color: rgba(15, 23, 42, 0.12) !important;
+        background: rgba(255, 255, 255, 0.9) !important;
+        color: #0f172a !important;
+      }
+
+      .portal-device-field button small,
+      .portal-auth-confirm-data small {
+        color: #64748b !important;
+      }
+
+      .portal-device-field button.active {
+        border-color: rgba(34, 197, 94, 0.55) !important;
+        background: #ecfdf5 !important;
+      }
+
+      .portal-auth-submit,
+      .portal-auth-confirm-submit {
+        background: linear-gradient(135deg, #22c55e, #14b8a6) !important;
+        color: #ffffff !important;
+        box-shadow: 0 16px 34px rgba(20, 184, 166, 0.24) !important;
+      }
+
+      .portal-ffp-page .ffp-poster {
+        background:
+          radial-gradient(circle at 0% 20%, rgba(34, 197, 94, 0.12), transparent 24rem),
+          radial-gradient(circle at 100% 10%, rgba(14, 165, 233, 0.12), transparent 22rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 58%, #eef2f7 100%) !important;
+        color: #0f172a !important;
+      }
+
+      .portal-ffp-page .ffp-bg {
+        opacity: 0.34 !important;
+      }
+
+      .portal-ffp-page .ffp-badge,
+      .portal-ffp-page .ffp-hero p,
+      .portal-mode-switch {
+        border-color: rgba(15, 23, 42, 0.12) !important;
+        background: rgba(255, 255, 255, 0.82) !important;
+        color: #334155 !important;
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      .portal-ffp-page .ffp-hero h3 {
+        background: linear-gradient(135deg, #0f172a, #334155 48%, #14b8a6) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        color: transparent !important;
+      }
+
+      .portal-ffp-page .ffp-price-card {
+        border-color: rgba(15, 23, 42, 0.1) !important;
+        background:
+          radial-gradient(circle at top right, rgba(20, 184, 166, 0.1), transparent 30%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98)) !important;
+        box-shadow: 0 22px 64px rgba(15, 23, 42, 0.12) !important;
+      }
+
+      .portal-ffp-page .ffp-plan-head span:not(.ffp-plan-icon),
+      .portal-ffp-page .ffp-plan-head small,
+      .portal-ffp-page .ffp-price-compare span,
+      .portal-ffp-page .ffp-item-list small {
+        color: #64748b !important;
+      }
+
+      .portal-ffp-page .ffp-item-list span,
+      .portal-ffp-page .ffp-feature-link,
+      .portal-ffp-page .ffp-price,
+      .portal-plugin-progress,
+      .portal-plugin-modules span,
+      .portal-plugin-outcome span,
+      .ffp-social-stats span {
+        border-color: rgba(15, 23, 42, 0.1) !important;
+        background: rgba(255, 255, 255, 0.78) !important;
+        color: #0f172a !important;
+      }
+
+      .portal-ffp-page .ffp-item-list b,
+      .portal-plugin-modules strong,
+      .portal-plugin-outcome span,
+      .ffp-social-stats b {
+        color: #0f172a !important;
+      }
+
+      .portal-ffp-page .ffp-price-value strong,
+      .portal-ffp-page .ffp-price-value span,
+      .portal-ffp-page .ffp-price-value b {
+        color: #0f172a !important;
+      }
+
+      .portal-ffp-page .ffp-buy-button {
+        background: linear-gradient(135deg, #22c55e, #14b8a6) !important;
+        color: #ffffff !important;
+        box-shadow: 0 18px 34px rgba(20, 184, 166, 0.24) !important;
+      }
+
+      .portal-owned-button {
+        background: #f1f5f9 !important;
+        color: #15803d !important;
+      }
+
+      .portal-checkout-grid {
+        display: grid !important;
+        grid-template-columns: minmax(0, 560px) !important;
+        justify-content: center !important;
+      }
+
+      .portal-shell,
+      .portal-shell.auth-shell {
+        background:
+          linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+          linear-gradient(180deg, #fbfcfe 0%, #f3f6fb 48%, #eef3f8 100%) !important;
+        background-size: 26px 26px, 26px 26px, auto !important;
+      }
+
+      .portal-ffp-page .ffp-poster {
+        border: 1px solid rgba(148, 163, 184, 0.24) !important;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.9)),
+          linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%) !important;
+        box-shadow:
+          0 28px 80px rgba(15, 23, 42, 0.12),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+      }
+
+      .portal-ffp-page .ffp-ring,
+      .portal-ffp-page .ffp-spark {
+        opacity: 0.28 !important;
+      }
+
+      .portal-ffp-page .ffp-badge {
+        border-color: rgba(34, 197, 94, 0.18) !important;
+        background: rgba(240, 253, 244, 0.92) !important;
+        color: #15803d !important;
+        box-shadow: none !important;
+      }
+
+      .portal-ffp-page .ffp-hero h3 {
+        filter: drop-shadow(0 12px 22px rgba(15, 23, 42, 0.08));
+      }
+
+      .portal-ffp-page .ffp-hero p {
+        border-color: rgba(148, 163, 184, 0.24) !important;
+        background: rgba(255, 255, 255, 0.88) !important;
+        color: #475569 !important;
+        box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      .portal-mode-switch {
+        border-color: rgba(148, 163, 184, 0.28) !important;
+        background: rgba(255, 255, 255, 0.86) !important;
+        box-shadow:
+          0 14px 32px rgba(15, 23, 42, 0.1),
+          inset 0 1px 0 rgba(255, 255, 255, 0.94) !important;
+      }
+
+      .portal-ffp-controls a {
+        background: #f1f5f9 !important;
+        color: #334155 !important;
+        box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18) !important;
+      }
+
+      .portal-ffp-controls a.active {
+        background: #0f172a !important;
+        color: #ffffff !important;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18) !important;
+      }
+
+      .portal-ffp-page .ffp-price-card {
+        border-color: rgba(148, 163, 184, 0.22) !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96)) !important;
+        box-shadow:
+          0 20px 54px rgba(15, 23, 42, 0.12),
+          inset 0 1px 0 rgba(255, 255, 255, 0.95) !important;
+      }
+
+      .portal-ffp-page .ffp-price-card.selected {
+        border-color: color-mix(in srgb, var(--ffp-b) 38%, rgba(148, 163, 184, 0.2)) !important;
+        box-shadow:
+          0 24px 62px rgba(15, 23, 42, 0.14),
+          0 0 0 1px color-mix(in srgb, var(--ffp-b) 14%, transparent),
+          inset 0 1px 0 rgba(255, 255, 255, 0.98) !important;
+      }
+
+      .portal-ffp-page .ffp-plan-icon {
+        box-shadow:
+          0 12px 26px color-mix(in srgb, var(--ffp-b) 28%, transparent),
+          inset 0 1px 0 rgba(255, 255, 255, 0.38) !important;
+      }
+
+      .portal-ffp-page .ffp-plan-head h4 {
+        text-shadow: none !important;
+      }
+
+      .portal-ffp-page .ffp-item-list span,
+      .portal-ffp-page .ffp-feature-link,
+      .portal-ffp-page .ffp-price,
+      .portal-plugin-progress,
+      .portal-plugin-modules span,
+      .portal-plugin-outcome span,
+      .ffp-social-stats span {
+        border-color: rgba(148, 163, 184, 0.2) !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.86)) !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76) !important;
+      }
+
+      .portal-ffp-page .ffp-item-negative {
+        border-color: rgba(239, 68, 68, 0.22) !important;
+        background: #fff7f7 !important;
+      }
+
+      .portal-ffp-page .ffp-item-list i,
+      .portal-plugin-modules b,
+      .portal-plugin-outcome b,
+      .ffp-social-stats i {
+        box-shadow: 0 8px 18px color-mix(in srgb, var(--ffp-b, #14b8a6) 18%, transparent) !important;
+      }
+
+      .portal-ffp-page .ffp-price {
+        background:
+          linear-gradient(180deg, #ffffff, #f8fafc) !important;
+      }
+
+      .portal-ffp-page .ffp-price-compare s {
+        color: #94a3b8 !important;
+      }
+
+      .portal-ffp-page .ffp-price-row small {
+        background: #eef2f7 !important;
+        color: #334155 !important;
+      }
+
+      .portal-ffp-page .ffp-buy-button {
+        background: #0f172a !important;
+        color: #ffffff !important;
+        box-shadow:
+          0 16px 34px rgba(15, 23, 42, 0.22),
+          inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
+      }
+
+      .portal-ffp-page .ffp-buy-button:not(:disabled):hover {
+        filter: brightness(1.06);
+      }
+
+      .portal-owned-button {
+        border-color: rgba(34, 197, 94, 0.24) !important;
+        background: #ecfdf5 !important;
+        color: #15803d !important;
+        box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.1) !important;
+      }
+
+      .portal-ffp-purchase-code {
+        border-color: rgba(34, 197, 94, 0.22) !important;
+        background: #f0fdf4 !important;
+        color: #166534 !important;
+      }
+
+      .portal-auth {
+        border-color: rgba(148, 163, 184, 0.24) !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96)) !important;
+        box-shadow: 0 26px 70px rgba(15, 23, 42, 0.14) !important;
+      }
+
+      .portal-auth-form input,
+      .portal-device-field button {
+        border-color: rgba(148, 163, 184, 0.28) !important;
+        background: #ffffff !important;
+        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06) !important;
+      }
+
+      .portal-auth-submit,
+      .portal-auth-confirm-submit {
+        background: #0f172a !important;
+        box-shadow: 0 18px 36px rgba(15, 23, 42, 0.22) !important;
+      }
+
+      .portal-shell.auth-shell {
+        padding: clamp(16px, 4vw, 34px) !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth {
+        width: min(100%, 460px) !important;
+        gap: 12px !important;
+        border-color: rgba(148, 163, 184, 0.22) !important;
+        border-radius: 22px !important;
+        background:
+          radial-gradient(circle at 12% 0%, rgba(20, 184, 166, 0.14), transparent 16rem),
+          radial-gradient(circle at 100% 10%, rgba(249, 115, 22, 0.1), transparent 14rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+        padding: clamp(18px, 4vw, 24px) !important;
+        box-shadow:
+          0 28px 80px rgba(15, 23, 42, 0.14),
+          inset 0 1px 0 rgba(255, 255, 255, 0.92) !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-bg span {
+        background: #14b8a6 !important;
+        box-shadow: 0 0 18px rgba(20, 184, 166, 0.36) !important;
+        opacity: 0.24 !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-bg i {
+        background: radial-gradient(circle, rgba(14, 165, 233, 0.12), transparent 62%) !important;
+      }
+
+      .portal-auth-copy {
+        display: grid;
+        gap: 8px;
+      }
+
+      .portal-auth-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .portal-auth-brand i {
+        width: 54px;
+        height: 54px;
+        display: grid;
+        place-items: center;
+        border-radius: 15px;
+        background: linear-gradient(135deg, #07111f, #0f766e 68%, #f59e0b);
+        color: #ffffff;
+        font-size: 18px;
+        font-style: normal;
+        font-weight: 950;
+        box-shadow: 0 16px 32px rgba(15, 118, 110, 0.2);
+      }
+
+      .portal-auth-brand span {
+        display: block;
+        color: #0f766e !important;
+        font-size: 11px !important;
+        font-weight: 950 !important;
+        letter-spacing: 0 !important;
+        text-transform: uppercase;
+      }
+
+      .portal-auth-brand strong {
+        display: block;
+        margin-top: 2px;
+        color: #0f172a;
+        font-size: 18px;
+        font-weight: 950;
+        line-height: 1;
+      }
+
+      .portal-shell.auth-shell .portal-auth h1 {
+        margin: 0 !important;
+        color: #07111f !important;
+        font-size: clamp(26px, 4.8vw, 34px) !important;
+        font-style: normal !important;
+        font-weight: 950 !important;
+        line-height: 1.06 !important;
+        text-transform: none !important;
+        text-shadow: none !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth h1 strong {
+        display: block;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #0f766e !important;
+        -webkit-text-fill-color: currentColor !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth p {
+        margin: 0 !important;
+        width: fit-content !important;
+        border: 1px solid rgba(148, 163, 184, 0.16) !important;
+        border-radius: 10px !important;
+        background: rgba(255, 255, 255, 0.52) !important;
+        color: #334155 !important;
+        padding: 5px 8px !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        line-height: 1.28 !important;
+        text-align: left !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-form {
+        gap: 12px !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-form label {
+        gap: 8px !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-form label span,
+      .portal-shell.auth-shell .portal-device-field legend {
+        color: #475569 !important;
+        font-size: 10px !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-form input {
+        min-height: 50px !important;
+        border-color: rgba(148, 163, 184, 0.32) !important;
+        border-radius: 15px !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        font-size: 16px !important;
+        font-weight: 850 !important;
+      }
+
+      .portal-shell.auth-shell .portal-phone-input {
+        min-height: 50px;
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.32);
+        border-radius: 15px;
+        background: #ffffff;
+        box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06);
+      }
+
+      .portal-shell.auth-shell .portal-phone-input b {
+        height: 100%;
+        min-height: 50px;
+        display: grid;
+        place-items: center;
+        padding: 0 12px 0 15px;
+        border-right: 1px solid rgba(148, 163, 184, 0.22);
+        color: #0f766e;
+        font-size: 14px;
+        font-weight: 950;
+        letter-spacing: 0;
+      }
+
+      .portal-shell.auth-shell .portal-phone-input input {
+        min-height: 48px !important;
+        flex: 1;
+        min-width: 0;
+        border: 0 !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        padding-left: 12px !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-form input:focus {
+        border-color: #14b8a6 !important;
+        box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12) !important;
+      }
+
+      .portal-shell.auth-shell .portal-phone-input:focus-within {
+        border-color: #14b8a6;
+        box-shadow:
+          0 0 0 4px rgba(20, 184, 166, 0.12),
+          0 12px 26px rgba(15, 23, 42, 0.06);
+      }
+
+      .portal-shell.auth-shell .portal-phone-input input:focus {
+        box-shadow: none !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field {
+        gap: 9px !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field > div {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field button {
+        min-height: 48px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 6px !important;
+        border-color: rgba(148, 163, 184, 0.24) !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        padding: 7px !important;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06) !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field svg {
+        width: 17px !important;
+        height: 17px !important;
+        flex: 0 0 auto !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field strong {
+        min-width: 0;
+        font-size: 12px !important;
+        line-height: 1 !important;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-shell.auth-shell .portal-device-field button.active {
+        border-color: rgba(20, 184, 166, 0.5) !important;
+        background: #ecfdf5 !important;
+        box-shadow:
+          0 14px 30px rgba(20, 184, 166, 0.12),
+          inset 0 0 0 1px rgba(20, 184, 166, 0.12) !important;
+      }
+
+      .portal-shell.auth-shell .portal-device-field small {
+        color: #64748b !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-submit {
+        min-height: 50px !important;
+        border-radius: 15px !important;
+        background: #0f172a !important;
+        color: #ffffff !important;
+        font-size: 15px !important;
+        box-shadow:
+          0 18px 34px rgba(15, 23, 42, 0.22),
+          inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-confirm-modal {
+        border-color: rgba(148, 163, 184, 0.22) !important;
+        border-radius: 24px !important;
+        background:
+          radial-gradient(circle at 12% 0%, rgba(20, 184, 166, 0.13), transparent 13rem),
+          radial-gradient(circle at 100% 0%, rgba(249, 115, 22, 0.08), transparent 12rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-confirm-edit {
+        background: #ffffff !important;
+        color: #0f172a !important;
+      }
+
+      .portal-shell.auth-shell .portal-auth-confirm-submit {
+        background: #0f172a !important;
+        color: #ffffff !important;
+        box-shadow:
+          0 18px 34px rgba(15, 23, 42, 0.2),
+          inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+      }
+
       @media (max-width: 860px) {
         .portal-plan-grid {
           grid-template-columns: 1fr;
@@ -3245,6 +4101,1268 @@ function PortalStyles() {
         .portal-auth h1,
         .portal-hero h1 {
           font-size: 42px;
+        }
+      }
+
+      .portal-shell .portal-ffp-page .ffp-poster {
+        background:
+          radial-gradient(circle at 8% 10%, rgba(34, 197, 94, 0.08), transparent 18rem),
+          radial-gradient(circle at 90% 6%, rgba(14, 165, 233, 0.08), transparent 18rem),
+          linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price-card,
+      .portal-shell .portal-ffp-page .ffp-price-card.selected {
+        overflow: hidden !important;
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        border-radius: 26px !important;
+        background:
+          linear-gradient(180deg, #ffffff 0%, #f9fbfd 100%) !important;
+        box-shadow:
+          0 18px 46px rgba(15, 23, 42, 0.1),
+          inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price-card::before,
+      .portal-shell .portal-ffp-page .ffp-price-card::after {
+        display: none !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-card-list {
+        gap: 18px !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-plan-head {
+        align-items: center !important;
+        padding: 18px 18px 4px !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-plan-head h4 {
+        font-size: clamp(31px, 8.2vw, 48px) !important;
+        line-height: 0.92 !important;
+        letter-spacing: -0.035em !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-plan-head span:not(.ffp-plan-icon) {
+        color: #64748b !important;
+        letter-spacing: 0.22em !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-plan-head small {
+        color: #64748b !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-item-list {
+        gap: 8px !important;
+        margin: 14px 18px 0 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-item-list span,
+      .portal-shell .portal-ffp-page .ffp-feature-link {
+        min-height: 34px !important;
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        border-radius: 13px !important;
+        background: #ffffff !important;
+        color: #182235 !important;
+        padding: 7px 10px !important;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-item-list b,
+      .portal-shell .portal-ffp-page .ffp-feature-link b {
+        color: #182235 !important;
+        font-size: 11px !important;
+        font-weight: 900 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-more-link.locked {
+        cursor: pointer !important;
+        opacity: 1 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-more-link.locked i {
+        filter: none !important;
+        opacity: 1 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price {
+        margin: 14px 18px 0 !important;
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        border-radius: 18px !important;
+        background:
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+        padding: 13px 14px !important;
+        box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price::before,
+      .portal-shell .portal-ffp-page .ffp-price::after {
+        display: none !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price-value em {
+        background: #f1f5f9 !important;
+        color: #64748b !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-price-value strong {
+        color: #0f172a !important;
+        text-shadow: 0 10px 18px rgba(15, 23, 42, 0.12) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-buy-button {
+        width: calc(100% - 36px) !important;
+        min-height: 48px !important;
+        margin: 14px 18px 0 !important;
+        border: 1px solid rgba(15, 23, 42, 0.08) !important;
+        border-radius: 15px !important;
+        background: linear-gradient(135deg, #111827, #0f172a) !important;
+        color: #ffffff !important;
+        letter-spacing: 0.07em !important;
+        box-shadow:
+          0 16px 30px rgba(15, 23, 42, 0.18),
+          inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-social-stats {
+        margin: 14px 18px 18px !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-social-stats span {
+        border: 1px solid rgba(148, 163, 184, 0.2) !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-social-stats small {
+        color: #64748b !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-hero {
+        padding-top: 44px !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-hero h3 {
+        font-size: clamp(48px, 13vw, 82px) !important;
+        line-height: 0.82 !important;
+        filter: none !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-hero h3 {
+        font-size: clamp(44px, 12vw, 74px) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-hero p {
+        width: min(100%, 370px) !important;
+        margin-top: 12px !important;
+        border-radius: 14px !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast {
+        border-color: rgba(148, 163, 184, 0.24) !important;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.95)) !important;
+        color: #0f172a !important;
+        box-shadow:
+          0 18px 44px rgba(15, 23, 42, 0.16),
+          0 0 0 1px rgba(255, 255, 255, 0.7) inset !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast i {
+        background:
+          radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.9) 0 14%, transparent 15%),
+          linear-gradient(135deg, #14b8a6, #22c55e) !important;
+        box-shadow:
+          0 0 0 6px rgba(20, 184, 166, 0.12),
+          0 14px 28px rgba(20, 184, 166, 0.24) !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast i::before {
+        border-color: #ffffff !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast small {
+        background: #ecfdf5 !important;
+        color: #047857 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast strong {
+        color: #0f172a !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-purchase-toast span {
+        color: #475569 !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-weekly {
+        --ffp-a: #fde047;
+        --ffp-b: #f59e0b;
+        --ffp-c: #f97316;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-monthly {
+        --ffp-a: #ef4444;
+        --ffp-b: #dc2626;
+        --ffp-c: #7f1d1d;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-lifetime {
+        --ffp-a: #e879f9;
+        --ffp-b: #a855f7;
+        --ffp-c: #6d28d9;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-weekly .ffp-plan-head h4 {
+        background: linear-gradient(90deg, #f59e0b, #facc15, #f97316) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-monthly .ffp-plan-head h4 {
+        background: linear-gradient(90deg, #ef4444, #dc2626, #7f1d1d) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-monthly .ffp-plan-icon::before {
+        background: #ffffff !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-monthly .ffp-item-list i::before {
+        border-left-color: #ffffff !important;
+        border-bottom-color: #ffffff !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-monthly .ffp-feature-link em {
+        color: #ffffff !important;
+      }
+
+      .portal-shell .portal-ffp-page .ffp-lifetime .ffp-plan-head h4 {
+        background: linear-gradient(90deg, #d946ef, #a855f7, #6d28d9) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-hero {
+        padding-top: 62px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-hero h3 {
+        font-size: clamp(32px, 9vw, 50px) !important;
+        line-height: 0.94 !important;
+        letter-spacing: 0 !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-hero p {
+        width: min(100%, 420px) !important;
+        border-style: dashed !important;
+        background: #ffffff !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-main-grid {
+        margin-top: 14px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price-card,
+      .portal-shell .portal-checkout-page .ffp-price-card.selected {
+        border-radius: 18px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-plan-head {
+        padding-top: 16px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-plan-head h4 {
+        font-size: clamp(30px, 7.8vw, 42px) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-buy-button {
+        background: linear-gradient(135deg, #0f172a, #020617) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-poster {
+        background:
+          radial-gradient(circle at 8% 0%, rgba(168, 85, 247, 0.08), transparent 16rem),
+          radial-gradient(circle at 92% 8%, rgba(20, 184, 166, 0.09), transparent 18rem),
+          linear-gradient(180deg, #fbfcfe 0%, #f2f6fb 100%) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-content {
+        padding-top: 70px !important;
+      }
+
+      .portal-checkout-shell {
+        width: min(100%, 900px);
+        display: grid;
+        gap: 14px;
+        align-items: start;
+        margin: 0 auto;
+      }
+
+      .portal-checkout-panel {
+        display: grid;
+        gap: 16px;
+        border: 1px solid #d8dde5;
+        border-radius: 7px;
+        background: #ffffff;
+        padding: 16px;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+      }
+
+      .portal-checkout-product {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 14px;
+        align-items: center;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 14px;
+      }
+
+      .portal-checkout-thumb {
+        height: 96px;
+        display: grid;
+        place-items: center;
+        border-radius: 3px;
+        background:
+          radial-gradient(circle at 24% 18%, rgba(34, 197, 94, 0.55), transparent 30%),
+          radial-gradient(circle at 80% 12%, rgba(168, 85, 247, 0.6), transparent 28%),
+          linear-gradient(135deg, #020617, #111827 54%, #581c87);
+        color: #ffffff;
+        overflow: hidden;
+      }
+
+      .portal-checkout-thumb b,
+      .portal-checkout-thumb em {
+        display: block;
+        font-weight: 950;
+        line-height: 0.9;
+        text-align: center;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-thumb b {
+        font-size: 14px;
+        letter-spacing: 0.08em;
+      }
+
+      .portal-checkout-thumb em {
+        color: #22c55e;
+        font-size: 28px;
+        font-style: normal;
+      }
+
+      .portal-checkout-product small {
+        color: #22c55e;
+        font-size: 12px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-product strong {
+        display: block;
+        margin-top: 5px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.1;
+      }
+
+      .portal-checkout-product span:not(.portal-checkout-thumb) {
+        display: block;
+        margin-top: 8px;
+        color: #6b7280;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .portal-checkout-provider {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border-radius: 4px;
+        background: #f9fafb;
+        padding: 2px 0;
+      }
+
+      .portal-checkout-provider span,
+      .portal-checkout-total small {
+        color: #6b7280;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-provider strong {
+        color: #15803d;
+        font-size: 13px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-total {
+        display: grid;
+        gap: 4px;
+        border-bottom: 1px solid #e5e7eb;
+        padding: 4px 0 16px;
+      }
+
+      .portal-checkout-total strong {
+        color: #27ae60;
+        font-size: 30px;
+        font-weight: 850;
+        line-height: 1;
+      }
+
+      .portal-checkout-total span {
+        width: fit-content;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #4b5563;
+        padding: 4px 8px;
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-methods {
+        display: grid;
+        gap: 12px;
+      }
+
+      .portal-checkout-methods span {
+        min-height: 54px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #d8dde5;
+        border-radius: 3px;
+        background: #ffffff;
+        color: #4b5563;
+        font-size: 16px;
+        font-weight: 750;
+      }
+
+      .portal-checkout-order {
+        display: grid;
+        gap: 14px;
+        border-radius: 7px;
+        background: #f4f4f4;
+        padding: 16px;
+      }
+
+      .portal-checkout-order h3 {
+        margin: 0;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 850;
+      }
+
+      .portal-checkout-order p {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0;
+        color: #111827;
+        font-size: 14px;
+      }
+
+      .portal-checkout-order p:first-of-type {
+        border-bottom: 1px dashed #d8dde5;
+        padding-bottom: 13px;
+      }
+
+      .portal-checkout-order strong {
+        color: #111827;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .portal-checkout-order b {
+        font-weight: 850;
+      }
+
+      .portal-checkout-order p:last-child strong {
+        color: #27ae60;
+      }
+
+      .portal-checkout-submit {
+        min-height: 56px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 0;
+        border-radius: 3px;
+        background: #65bd4f;
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 800;
+        box-shadow: none;
+      }
+
+      .portal-checkout-submit:disabled {
+        cursor: default;
+        opacity: 0.7;
+      }
+
+      .portal-checkout-submit.owned {
+        background: #e5f7e1;
+        color: #248a3d;
+      }
+
+      .portal-checkout-owned-code {
+        margin: -4px 0 0;
+        color: #248a3d;
+        font-size: 12px;
+        font-weight: 800;
+        text-align: center;
+      }
+
+      .portal-checkout-secure,
+      .portal-checkout-digital {
+        margin: 0;
+        color: #475569;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1.45;
+        text-align: center;
+      }
+
+      .portal-checkout-secure {
+        color: #149344;
+      }
+
+      .portal-checkout-processed {
+        display: grid;
+        justify-items: center;
+        gap: 9px;
+        border-top: 1px solid #e5e7eb;
+        margin-top: 4px;
+        padding-top: 16px;
+        text-align: center;
+      }
+
+      .portal-checkout-processed small {
+        color: #c0c4cc;
+        font-size: 11px;
+        font-weight: 850;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .portal-checkout-processed strong {
+        color: #008aa7;
+        font-size: 22px;
+        font-weight: 900;
+      }
+
+      .portal-checkout-processed span,
+      .portal-checkout-processed em {
+        color: #334155;
+        font-size: 12px;
+        font-style: normal;
+        line-height: 1.35;
+      }
+
+      @media (min-width: 860px) {
+        .portal-checkout-shell {
+          grid-template-columns: minmax(0, 530px) minmax(280px, 340px);
+        }
+
+        .portal-checkout-grid {
+          order: 1;
+        }
+
+        .portal-checkout-panel {
+          position: sticky;
+          top: 86px;
+          order: 2;
+        }
+      }
+
+      .portal-shell .portal-checkout-page .ffp-main-grid {
+        margin-top: 16px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-card-list {
+        width: min(100%, 520px) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price-card,
+      .portal-shell .portal-checkout-page .ffp-price-card.selected {
+        border-radius: 28px !important;
+        background:
+          linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%) !important;
+        box-shadow:
+          0 20px 56px rgba(15, 23, 42, 0.12),
+          inset 0 1px 0 rgba(255, 255, 255, 0.98) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-plan-head {
+        padding: 20px 20px 6px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-plan-icon {
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 16px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-item-list {
+        margin: 14px 20px 0 !important;
+        gap: 7px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-item-list span,
+      .portal-shell .portal-checkout-page .ffp-feature-link {
+        min-height: 32px !important;
+        border-radius: 14px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price {
+        margin: 16px 20px 0 !important;
+        border-radius: 20px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-buy-button {
+        width: calc(100% - 40px) !important;
+        margin: 16px 20px 20px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-social-stats {
+        display: none !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-weekly {
+        --checkout-accent-a: #f59e0b;
+        --checkout-accent-b: #f97316;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-monthly {
+        --checkout-accent-a: #ef4444;
+        --checkout-accent-b: #991b1b;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-lifetime {
+        --checkout-accent-a: #d946ef;
+        --checkout-accent-b: #7c3aed;
+      }
+
+      @media (max-width: 520px) {
+        .portal-shell .portal-ffp-page .ffp-price-card,
+        .portal-shell .portal-ffp-page .ffp-price-card.selected {
+          border-radius: 24px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-plan-head {
+          padding: 16px 16px 4px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-item-list {
+          margin-inline: 16px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-price,
+        .portal-shell .portal-ffp-page .ffp-social-stats {
+          margin-inline: 16px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-buy-button {
+          width: calc(100% - 32px) !important;
+          margin-inline: 16px !important;
+        }
+
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price-card,
+      .portal-shell .portal-checkout-page .ffp-price-card.selected {
+        border-color: #d8dde5 !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-plan-icon {
+        border-radius: 7px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-item-list span,
+      .portal-shell .portal-checkout-page .ffp-feature-link,
+      .portal-shell .portal-checkout-page .ffp-price {
+        border-color: #d8dde5 !important;
+        border-radius: 5px !important;
+        background: #ffffff !important;
+        box-shadow: none !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price {
+        border-radius: 7px !important;
+      }
+
+      .portal-shell .portal-checkout-page .ffp-price-row small {
+        border-radius: 4px !important;
+      }
+
+      .portal-shell .portal-checkout-page .portal-checkout-submit,
+      .portal-shell .portal-checkout-page .ffp-buy-button.portal-checkout-submit {
+        min-height: 56px !important;
+        border: 0 !important;
+        border-radius: 3px !important;
+        background: #65bd4f !important;
+        color: #ffffff !important;
+        font-size: 16px !important;
+        font-weight: 800 !important;
+        letter-spacing: 0 !important;
+        text-transform: none !important;
+        box-shadow: none !important;
+      }
+
+      .portal-shell .portal-checkout-page .portal-checkout-submit.owned,
+      .portal-shell .portal-checkout-page .ffp-buy-button.portal-checkout-submit.owned {
+        background: #e5f7e1 !important;
+        color: #248a3d !important;
+      }
+
+      .portal-shell .portal-checkout-page .portal-checkout-secure {
+        width: calc(100% - 40px);
+        margin: 12px 20px 20px;
+        color: #149344;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1.4;
+        text-align: center;
+      }
+
+      .portal-mode-switch .portal-plugin-back {
+        min-height: 38px !important;
+        min-width: 68px !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 0 !important;
+        border-radius: 999px !important;
+        background: #f1f5f9 !important;
+        color: #334155 !important;
+        padding: 0 13px !important;
+        font-size: 12px !important;
+        font-weight: 950 !important;
+        text-transform: uppercase !important;
+        box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18) !important;
+        cursor: pointer;
+      }
+
+      .portal-plugin-ffp .ffp-poster {
+        background:
+          linear-gradient(135deg, rgba(236, 253, 245, 0.96), rgba(248, 250, 252, 0.94)),
+          linear-gradient(180deg, #ffffff 0%, #eff6ff 100%) !important;
+      }
+
+      .portal-plugin-ffp .ffp-hero h3 {
+        background: linear-gradient(135deg, #111827, #0f766e 52%, #ea580c) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        color: transparent !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-grid {
+        grid-template-columns: minmax(240px, 0.78fr) minmax(320px, 1fr) !important;
+        align-items: center !important;
+        gap: 22px !important;
+      }
+
+      .portal-plugin-ffp .ffp-showcase {
+        border: 1px solid rgba(15, 23, 42, 0.1) !important;
+        border-radius: 24px !important;
+        background:
+          radial-gradient(circle at 50% 20%, rgba(20, 184, 166, 0.18), transparent 34%),
+          linear-gradient(180deg, #ffffff, #f8fafc) !important;
+        box-shadow: 0 20px 52px rgba(15, 23, 42, 0.1) !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-card-list .ffp-price-card {
+        border: 1px solid rgba(15, 23, 42, 0.12) !important;
+        border-top: 5px solid #14b8a6 !important;
+        border-radius: 22px !important;
+        background:
+          linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%) !important;
+        box-shadow:
+          0 24px 64px rgba(15, 23, 42, 0.14),
+          inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-progress,
+      .portal-plugin-ffp .portal-plugin-modules span,
+      .portal-plugin-ffp .portal-plugin-outcome span {
+        border-color: rgba(20, 184, 166, 0.22) !important;
+        background: #f0fdfa !important;
+        color: #134e4a !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-progress span,
+      .portal-plugin-ffp .portal-plugin-outcome span,
+      .portal-plugin-ffp .portal-plugin-modules strong {
+        color: #134e4a !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-progress strong,
+      .portal-plugin-ffp .portal-plugin-modules b,
+      .portal-plugin-ffp .portal-plugin-outcome b {
+        background: linear-gradient(135deg, #14b8a6, #22c55e) !important;
+        color: #ffffff !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-modules .missing {
+        border-color: rgba(239, 68, 68, 0.28) !important;
+        background: #fff7f7 !important;
+      }
+
+      .portal-plugin-ffp .portal-plugin-modules .missing b {
+        background: linear-gradient(135deg, #ef4444, #f97316) !important;
+      }
+
+      .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-download-page):not(.portal-plugin-ffp) .ffp-hero h3 {
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #07111f !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.96),
+          0 12px 24px rgba(15, 23, 42, 0.24);
+      }
+
+      .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-download-page):not(.portal-plugin-ffp) .ffp-hero h3 strong {
+        display: block;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #04766f !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.98),
+          0 12px 24px rgba(4, 120, 110, 0.26);
+      }
+
+      .portal-shell .portal-ffp-page .portal-ffp-purchase-code,
+      .portal-shell .portal-ffp-page .portal-download-code {
+        border-color: rgba(22, 163, 74, 0.34) !important;
+        background: #dcfce7 !important;
+        color: #14532d !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62) !important;
+      }
+
+      .portal-shell .portal-ffp-page .portal-ffp-purchase-code b,
+      .portal-shell .portal-ffp-page .portal-download-code b {
+        color: #052e16 !important;
+      }
+
+      .portal-download-page .ffp-poster {
+        background:
+          radial-gradient(circle at 12% 4%, rgba(20, 184, 166, 0.12), transparent 18rem),
+          radial-gradient(circle at 92% 8%, rgba(249, 115, 22, 0.1), transparent 18rem),
+          linear-gradient(180deg, #fbfcfe 0%, #eef6f8 100%) !important;
+      }
+
+      .portal-download-content {
+        padding-top: 66px !important;
+      }
+
+      .portal-download-hero {
+        width: min(100%, 760px);
+        margin: 0 auto;
+        text-align: center;
+      }
+
+      .portal-shell .portal-download-page .portal-download-hero h3 {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        column-gap: 16px;
+        row-gap: 4px;
+        margin: 0;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #07111f !important;
+        font-size: clamp(40px, 10vw, 72px) !important;
+        line-height: 1 !important;
+        overflow: visible;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.96),
+          0 12px 24px rgba(15, 23, 42, 0.24);
+      }
+
+      .portal-shell .portal-download-page .portal-download-hero h3 span,
+      .portal-shell .portal-download-page .portal-download-hero h3 strong {
+        display: inline-block;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #07111f !important;
+        -webkit-text-fill-color: currentColor;
+      }
+
+      .portal-shell .portal-download-page .portal-download-hero h3 strong {
+        color: #04766f !important;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.98),
+          0 12px 24px rgba(4, 120, 110, 0.26);
+      }
+
+      .portal-download-grid {
+        position: relative;
+        z-index: 2;
+        width: min(100%, 720px);
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+        margin: 16px auto 44px;
+      }
+
+      .portal-download-main-card,
+      .portal-download-guide {
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.96);
+        padding: 16px;
+        box-shadow: 0 22px 56px rgba(15, 23, 42, 0.12);
+      }
+
+      .portal-download-product {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        padding-bottom: 14px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      .portal-download-product > span {
+        width: 64px;
+        height: 64px;
+        display: grid;
+        place-items: center;
+        border-radius: 16px;
+        background:
+          radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.38), transparent 34%),
+          linear-gradient(135deg, #111827, #0f766e 58%, #f97316);
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: 950;
+        box-shadow: 0 16px 32px rgba(15, 118, 110, 0.22);
+      }
+
+      .portal-download-product small,
+      .portal-download-guide > span,
+      .portal-download-status-grid small {
+        color: #0f766e;
+        font-size: 11px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-download-product strong {
+        display: block;
+        margin-top: 4px;
+        color: #0f172a;
+        font-size: 32px;
+        line-height: 0.96;
+      }
+
+      .portal-download-product p {
+        margin: 7px 0 0;
+        color: #475569;
+        font-size: 13px;
+        font-weight: 780;
+        line-height: 1.34;
+      }
+
+      .portal-download-status-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .portal-download-status-grid span {
+        display: grid;
+        gap: 4px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 14px;
+        background: #f8fafc;
+        padding: 12px;
+      }
+
+      .portal-download-status-grid b {
+        min-width: 0;
+        color: #0f172a;
+        font-size: 12px;
+        line-height: 1.18;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-download-login-item {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        column-gap: 10px;
+      }
+
+      .portal-download-login-item small,
+      .portal-download-login-item b {
+        grid-column: 1;
+      }
+
+      .portal-download-login-item button {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+        min-height: 38px;
+        border: 0;
+        border-radius: 12px;
+        background: #0f766e;
+        color: #ffffff;
+        padding: 0 14px;
+        font-size: 12px;
+        font-weight: 950;
+        cursor: pointer;
+      }
+
+      .portal-download-login-item button:disabled {
+        cursor: not-allowed;
+        opacity: 0.54;
+      }
+
+      .portal-download-primary {
+        min-height: 58px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin-top: 14px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #16a34a, #14b8a6);
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 950;
+        text-decoration: none;
+        text-transform: uppercase;
+        box-shadow: 0 18px 36px rgba(20, 184, 166, 0.24);
+      }
+
+      .portal-download-unavailable {
+        margin: 14px 0 0;
+        border: 1px solid rgba(249, 115, 22, 0.28);
+        border-radius: 14px;
+        background: #fff7ed;
+        color: #9a3412;
+        padding: 12px;
+        font-size: 13px;
+        font-weight: 880;
+        line-height: 1.35;
+      }
+
+      .portal-download-guide h4 {
+        margin: 5px 0 12px;
+        color: #0f172a;
+        font-size: 22px;
+        line-height: 1.02;
+      }
+
+      .portal-download-guide ol {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: downloadGuide;
+      }
+
+      .portal-download-guide li {
+        counter-increment: downloadGuide;
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 9px;
+        align-items: start;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 13px;
+        background: #ffffff;
+        color: #334155;
+        padding: 9px;
+        font-size: 12px;
+        font-weight: 850;
+        line-height: 1.3;
+      }
+
+      .portal-download-guide li::before {
+        content: counter(downloadGuide);
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        background: #111827;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 950;
+      }
+
+      @media (max-width: 860px) {
+        .portal-plugin-ffp .portal-plugin-grid,
+        .portal-download-grid {
+          grid-template-columns: 1fr !important;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .portal-download-status-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .portal-download-login-item {
+          grid-template-columns: 1fr;
+        }
+
+        .portal-download-login-item button {
+          grid-column: 1;
+          grid-row: auto;
+          width: 100%;
+          margin-top: 6px;
+        }
+
+        .portal-download-product {
+          grid-template-columns: 62px minmax(0, 1fr);
+        }
+
+        .portal-download-product > span {
+          width: 62px;
+          height: 62px;
+          border-radius: 15px;
+          font-size: 18px;
+        }
+      }
+
+      @media (min-width: 900px) {
+        .portal-shell {
+          padding: 18px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-poster {
+          width: min(100%, 1240px) !important;
+          min-height: calc(100vh - 36px) !important;
+          margin: 0 auto !important;
+          border-radius: 28px !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-content {
+          width: min(100%, 1160px) !important;
+          margin: 0 auto !important;
+          padding: 88px 28px 72px !important;
+        }
+
+        .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-download-page) .ffp-main-grid {
+          grid-template-columns: minmax(260px, 0.74fr) minmax(560px, 1fr) !important;
+          align-items: center !important;
+          gap: 28px !important;
+        }
+
+        .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-plugin-ffp) .ffp-card-list {
+          width: 100% !important;
+          max-width: 820px !important;
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+          align-items: stretch !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-price-card {
+          min-width: 0 !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-plan-head {
+          grid-template-columns: 46px minmax(0, 1fr) !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-plan-head h4 {
+          font-size: clamp(28px, 3vw, 42px) !important;
+          overflow-wrap: anywhere !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-item-list b,
+        .portal-shell .portal-ffp-page .ffp-feature-link b {
+          font-size: 10px !important;
+          line-height: 1.16 !important;
+        }
+
+        .portal-shell .portal-ffp-page .ffp-price-value strong {
+          font-size: clamp(44px, 4.2vw, 58px) !important;
+        }
+
+        .portal-plugin-ffp .portal-plugin-grid {
+          width: min(100%, 1020px) !important;
+          margin: 0 auto !important;
+        }
+
+        .portal-plugin-ffp .portal-plugin-card-list {
+          width: min(100%, 560px) !important;
+          max-width: 560px !important;
+        }
+
+        .portal-download-page .portal-download-content {
+          padding-top: 72px !important;
+        }
+
+        .portal-download-page .portal-download-hero {
+          text-align: center !important;
+        }
+
+        .portal-download-page .portal-download-hero .ffp-badge,
+        .portal-download-page .portal-download-hero p {
+          margin-left: auto !important;
+          margin-right: auto !important;
+        }
+
+        .portal-download-grid {
+          width: min(100%, 760px) !important;
+          grid-template-columns: 1fr !important;
+          align-items: start !important;
+          gap: 14px !important;
+        }
+
+        .portal-download-main-card,
+        .portal-download-guide {
+          border-radius: 22px !important;
+        }
+
+        .portal-shell .portal-checkout-page .ffp-content {
+          width: min(100%, 680px) !important;
+          padding-top: 72px !important;
+        }
+
+        .portal-shell .portal-checkout-page .ffp-card-list {
+          max-width: 520px !important;
+          grid-template-columns: 1fr !important;
+        }
+      }
+
+      @media (min-width: 900px) and (max-width: 1120px) {
+        .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-plugin-ffp) .ffp-card-list {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        }
+
+        .portal-shell .portal-ffp-page:not(.portal-checkout-page):not(.portal-download-page) .ffp-main-grid {
+          grid-template-columns: minmax(220px, 0.58fr) minmax(0, 1fr) !important;
+        }
+      }
+
+      @media (min-width: 1280px) {
+        .portal-shell .portal-ffp-page .ffp-hero h3 {
+          font-size: clamp(58px, 5.4vw, 86px) !important;
+        }
+
+        .portal-shell .portal-download-page .portal-download-hero h3 {
+          font-size: clamp(52px, 5vw, 76px) !important;
         }
       }
     `}</style>

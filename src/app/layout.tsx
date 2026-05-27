@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Chat Privado',
-  description: 'Chat privado para conversar com clientes',
+  title: 'Gordin du Xit',
+  description: 'Area de planos, plugin e download do Gordin du Xit',
 }
 
 export default function RootLayout({

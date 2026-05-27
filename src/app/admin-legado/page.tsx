@@ -73,7 +73,7 @@ function makeAdminPresentationMessages(chat: Chat): ChatMessage[] {
   const baseMessages: ChatMessage[] = [
     {
       id: 'admin-presentation-audio-start',
-      text: 'Audio 1 de 4 - inicio do chat privado',
+      text: 'Audio 1 de 4 - inicio do Gordin du Xit',
       sender: 'admin',
       kind: 'text',
       audioKey: introAudioKey,
@@ -167,7 +167,7 @@ function getPluginExplanation(chat: Chat) {
 function getAppInstallGuide(chat: Chat) {
   const username = chat.accessUsername || chat.usernameKey || 'mano'
 
-  return `${username}, segue o passo a passo simples para instalar e usar:\n\n1. Clique em ABAIXAR e espere o APK terminar de baixar.\n2. Abra o arquivo baixado no celular.\n3. Se aparecer aviso do Android, toque em Configurações e permita instalar app desta fonte.\n4. Conclua a instalação e abra o XitDuGordin.\n5. Entre com o mesmo usuário e senha que você usa aqui no chat privado.\n6. Depois do login, confira se o plano aparece ativo e toque nas funções que quiser usar.\n\nSe aparecer ServiceSync pendente, me chama aqui no chat antes de tentar mexer nas funções.`
+  return `${username}, segue o passo a passo simples para instalar e usar:\n\n1. Clique em ABAIXAR e espere o APK terminar de baixar.\n2. Abra o arquivo baixado no celular.\n3. Se aparecer aviso do Android, toque em Configurações e permita instalar app desta fonte.\n4. Conclua a instalação e abra o Gordin du Xit.\n5. Entre com o mesmo WhatsApp cadastrado no Gordin du Xit.\n6. Depois do login, confira se o plano aparece ativo e toque nas funções que quiser usar.\n\nSe aparecer ServiceSync pendente, fale com o vendedor antes de tentar mexer nas funções.`
 }
 
 type AppUpdateDraft = {
@@ -268,7 +268,7 @@ function LeadSummary({
   }[chat.funnelStatus || 'new']
 
   return (
-    <aside className="lead-panel" aria-label="Resumo do chat privado">
+    <aside className="lead-panel" aria-label="Resumo do atendimento">
       <div className="lead-topline">
         <div className="lead-grid">
           <div>
@@ -313,19 +313,19 @@ function LeadSummary({
           type="button"
           onClick={onToggleMenu}
           aria-expanded={menuOpen}
-          aria-label="Abrir opcoes do chat privado"
+          aria-label="Abrir opcoes do atendimento"
         >
           <span />
           <span />
           <span />
         </button>
         {menuOpen && (
-          <div className="lead-menu-popover" role="menu" aria-label="Opcoes do chat privado">
+          <div className="lead-menu-popover" role="menu" aria-label="Opcoes do atendimento">
             <button type="button" onClick={onOpenActivities} role="menuitem">
               Acoes do usuario
             </button>
             <button type="button" onClick={onOpenChatActions} role="menuitem">
-              Acoes do chat privado
+              Acoes do atendimento
             </button>
           </div>
         )}
@@ -367,12 +367,12 @@ function ChatActionsModal({
         className="admin-action-drawer popup-card"
         role="dialog"
         aria-modal="true"
-        aria-label="Acoes do chat privado"
+        aria-label="Acoes do atendimento"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="drawer-header popup-card-head">
           <div>
-            <span>Chat privado</span>
+            <span>Gordin du Xit</span>
             <h3>Acoes do chat</h3>
           </div>
           <button type="button" onClick={onClose} aria-label="Fechar acoes">
@@ -1133,9 +1133,9 @@ export default function AdminPage() {
             </span>
             <h2>
               {selectedChat?.leadProfile?.deviceLabel
-                ? `Chat privado ${selectedChat.leadProfile.deviceLabel}`
+                ? `Gordin du Xit ${selectedChat.leadProfile.deviceLabel}`
                 : selectedChat
-                  ? 'Chat privado'
+                  ? 'Gordin du Xit'
                   : 'Selecione uma conversa'}
             </h2>
           </div>

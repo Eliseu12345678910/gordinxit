@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { verifyAdminSession, signInAdmin } from '@/lib/admin-session'
 import { auth } from '@/lib/firebase'
+import { formatPhoneOrUsername } from '@/lib/phone'
 import {
   listenChats,
   loadAdminSettings,
@@ -31,11 +32,7 @@ const deviceLabels = {
 } as const
 
 function formatPhone(value?: string) {
-  const digits = String(value || '').replace(/\D/g, '')
-  if (digits.length <= 2) return value || 'Sem telefone'
-  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
-  if (digits.length <= 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
-  return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`
+  return formatPhoneOrUsername(value)
 }
 
 function formatDate(value: Chat['updatedAt']) {
@@ -373,7 +370,12 @@ function DetailPanel({
         )}
         <article className="wide">
           <span>Cliente no checkout</span>
-          <strong>{chat.payment?.customer?.name || chat.payment?.customer?.email || chat.payment?.customer?.phone || 'Sem dados'}</strong>
+          <strong>
+            {chat.payment?.customer?.name ||
+              chat.payment?.customer?.email ||
+              formatPhone(chat.payment?.customer?.phone) ||
+              'Sem dados'}
+          </strong>
         </article>
       </div>
 

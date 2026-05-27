@@ -3,6 +3,7 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
 import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
+import { isPhoneInput, normalizeBrazilPhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
 
@@ -24,14 +25,10 @@ type IntroAudioKey = 'start' | 'start-live'
 
 function normalizeUsername(username: string) {
   const clean = username.trim().toLowerCase()
-  const rawPhoneDigits = clean.replace(/\D/g, '')
-  const phoneDigits =
-    rawPhoneDigits.length === 13 && rawPhoneDigits.startsWith('55')
-      ? rawPhoneDigits.slice(2)
-      : rawPhoneDigits
+  const phoneDigits = normalizeBrazilPhone(clean)
 
-  if (phoneDigits.length >= 10 && /^[+\d\s().-]+$/.test(clean)) {
-    return phoneDigits.slice(0, 11)
+  if (phoneDigits.length >= 10 && isPhoneInput(clean)) {
+    return phoneDigits
   }
 
   return clean
@@ -134,7 +131,7 @@ export async function POST(request: NextRequest) {
     const password = String(body.password || '')
     const mode = body.mode === 'signup' ? 'signup' : 'login'
     const usernameError = validateUsername(username)
-    const passwordError = validatePassword(password)
+    const passwordError = password ? validatePassword(password) : ''
 
     if (usernameError || passwordError) {
       return NextResponse.json({ error: usernameError || passwordError }, { status: 400 })
@@ -154,61 +151,47 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      if (mode === 'signup') {
-        return NextResponse.json(
-          { error: 'Essa conta ja existe. Entre com sua senha.', code: 'account_exists' },
-          { status: 409 },
-        )
-      }
+      const chatId = String(account?.chatId || body.requestedChatId || adminDb.collection('chats').doc().id)
+      const chatRef = adminDb.collection('chats').doc(chatId)
+      const chatSnapshot = await chatRef.get()
+      const chat = chatSnapshot.data()
+      const introAudioKey = getSavedIntroAudioKey(account, chat)
 
-      const passwordSalt = String(account?.passwordSalt || '')
-      const passwordHash = String(account?.passwordHash || '')
-
-      if (passwordSalt && passwordHash && verifyPassword(password, passwordSalt, passwordHash)) {
-        const chatId = String(account?.chatId || body.requestedChatId || adminDb.collection('chats').doc().id)
-        const chatRef = adminDb.collection('chats').doc(chatId)
-        const chatSnapshot = await chatRef.get()
-        const chat = chatSnapshot.data()
-        const introAudioKey = getSavedIntroAudioKey(account, chat)
-
-        await accountRef.set(
-          {
-            introAudioKey,
-            lastAccessAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        )
-
-        await chatRef.set(
-          {
-            accountId: usernameKey,
-            clientId: body.clientId || '',
-            ownerUid: account?.ownerUid || uid,
-            participantUids: FieldValue.arrayUnion(uid),
-            accessUsername: account?.accessUsername || username,
-            usernameKey,
-            status: 'open',
-            automationComplete: true,
-            introAudioKey,
-            funnelStatus: account?.funnelStatus || 'new',
-            lastAccessAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        )
-
-        return NextResponse.json({
-          chatId,
-          accountId: usernameKey,
-          recovered: true,
-          accessUsername: account?.accessUsername || username,
-          profile: getAccessProfile(account, chat),
+      await accountRef.set(
+        {
           introAudioKey,
-        })
-      }
+          lastAccessAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      )
 
-      return NextResponse.json({ error: 'Usuario ou senha incorretos.' }, { status: 401 })
+      await chatRef.set(
+        {
+          accountId: usernameKey,
+          clientId: body.clientId || '',
+          ownerUid: account?.ownerUid || uid,
+          participantUids: FieldValue.arrayUnion(uid),
+          accessUsername: account?.accessUsername || username,
+          usernameKey,
+          status: 'open',
+          automationComplete: true,
+          introAudioKey,
+          funnelStatus: account?.funnelStatus || 'new',
+          lastAccessAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      return NextResponse.json({
+        chatId,
+        accountId: usernameKey,
+        recovered: true,
+        accessUsername: account?.accessUsername || username,
+        profile: getAccessProfile(account, chat),
+        introAudioKey,
+      })
     }
 
     const legacyChats = await adminDb
@@ -217,16 +200,8 @@ export async function POST(request: NextRequest) {
       .limit(10)
       .get()
 
-    if (mode === 'signup' && !legacyChats.empty) {
-      return NextResponse.json(
-        { error: 'Essa conta ja existe. Entre com sua senha.', code: 'account_exists' },
-        { status: 409 },
-      )
-    }
-
     for (const item of legacyChats.docs) {
       const chat = item.data()
-      if (!chat.passwordSalt || !chat.passwordHash) continue
 
       if (isAccountAccessBlocked(chat)) {
         return NextResponse.json(
@@ -235,63 +210,55 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      if (verifyPassword(password, chat.passwordSalt, chat.passwordHash)) {
-        const introAudioKey = getSavedIntroAudioKey(chat, chat)
+      const introAudioKey = getSavedIntroAudioKey(chat, chat)
 
-        await accountRef.set(
-          {
-            chatId: item.id,
-            ownerUid: chat.ownerUid || uid,
-            accessUsername: chat.accessUsername || username,
-            usernameKey,
-            passwordSalt: chat.passwordSalt,
-            passwordHash: chat.passwordHash,
-            clientId: body.clientId || chat.clientId || '',
-            source: chat.source || 'chat',
-            introAudioKey,
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-            lastAccessAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        )
-
-        await item.ref.set(
-          {
-            accountId: usernameKey,
-            participantUids: FieldValue.arrayUnion(uid),
-            introAudioKey,
-            lastAccessAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true },
-        )
-
-        return NextResponse.json({
+      await accountRef.set(
+        {
           chatId: item.id,
-          accountId: usernameKey,
-          recovered: true,
+          ownerUid: chat.ownerUid || uid,
           accessUsername: chat.accessUsername || username,
-          profile: getAccessProfile(chat, chat),
+          usernameKey,
+          ...(chat.passwordSalt ? { passwordSalt: chat.passwordSalt } : {}),
+          ...(chat.passwordHash ? { passwordHash: chat.passwordHash } : {}),
+          clientId: body.clientId || chat.clientId || '',
+          source: chat.source || 'site',
           introAudioKey,
-        })
-      }
-    }
-
-    if (!legacyChats.empty) {
-      return NextResponse.json({ error: 'Usuario ou senha incorretos.' }, { status: 401 })
-    }
-
-    if (mode === 'login') {
-      return NextResponse.json(
-        { error: 'Essa conta ainda nao existe. Crie uma conta para continuar.', code: 'account_not_found' },
-        { status: 404 },
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          lastAccessAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
       )
+
+      await item.ref.set(
+        {
+          accountId: usernameKey,
+          participantUids: FieldValue.arrayUnion(uid),
+          introAudioKey,
+          lastAccessAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      return NextResponse.json({
+        chatId: item.id,
+        accountId: usernameKey,
+        recovered: true,
+        accessUsername: chat.accessUsername || username,
+        profile: getAccessProfile(chat, chat),
+        introAudioKey,
+      })
     }
 
     const chatId = body.requestedChatId || adminDb.collection('chats').doc().id
-    const salt = randomBytes(16).toString('hex')
-    const passwordHash = hashPassword(password, salt)
+    const passwordSalt = password ? randomBytes(16).toString('hex') : ''
+    const accountCredentials = passwordSalt
+      ? {
+          passwordSalt,
+          passwordHash: hashPassword(password, passwordSalt),
+        }
+      : {}
     const introAudioKey = await getCurrentIntroAudioKey(adminDb)
 
     await accountRef.set(
@@ -300,8 +267,7 @@ export async function POST(request: NextRequest) {
         ownerUid: uid,
         accessUsername: username,
         usernameKey,
-        passwordSalt: salt,
-        passwordHash,
+        ...accountCredentials,
         clientId: body.clientId || '',
         source: 'site',
         introAudioKey,

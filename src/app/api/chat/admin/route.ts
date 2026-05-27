@@ -120,7 +120,7 @@ function addPaymentTrackingToLink(
     const url = new URL(link)
     url.searchParams.set('src', chatId)
     url.searchParams.set('sck', chatId)
-    url.searchParams.set('utm_source', 'chat_privado')
+    url.searchParams.set('utm_source', 'gordin_du_xit')
     url.searchParams.set('utm_medium', 'chat')
     if (plan) url.searchParams.set('utm_campaign', plan)
     url.searchParams.set('utm_content', chatId)
@@ -207,14 +207,14 @@ export async function POST(request: NextRequest) {
     const chatSnapshot = await chatRef.get()
 
     if (!chatSnapshot.exists) {
-      return NextResponse.json({ error: 'Chat privado nao encontrado.' }, { status: 404 })
+      return NextResponse.json({ error: 'Atendimento Gordin du Xit nao encontrado.' }, { status: 404 })
     }
 
     const chat = chatSnapshot.data()
     const accountId = String(chat?.accountId || chat?.usernameKey || '').toLowerCase()
 
     if (!accountId && action !== 'edit_message' && action !== 'delete_message') {
-      return NextResponse.json({ error: 'Conta nao encontrada para este chat privado.' }, { status: 400 })
+      return NextResponse.json({ error: 'Conta nao encontrada para este atendimento.' }, { status: 400 })
     }
 
     if (action === 'block_account' || action === 'unblock_account') {
@@ -482,7 +482,7 @@ export async function POST(request: NextRequest) {
         downloadLabel: 'ABAIXAR',
         downloadLink: appSettings.apkUrl,
         appVersionName: appSettings.latestVersionName,
-        appName: 'XitDuGordin',
+        appName: 'Gordin du Xit',
         createdAt: FieldValue.serverTimestamp(),
       })
 
@@ -618,6 +618,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (error) {
     console.error('Chat admin action error:', error)
-    return NextResponse.json({ error: 'Nao foi possivel atualizar o chat privado.' }, { status: 500 })
+    return NextResponse.json({ error: 'Nao foi possivel atualizar o atendimento Gordin du Xit.' }, { status: 500 })
   }
 }

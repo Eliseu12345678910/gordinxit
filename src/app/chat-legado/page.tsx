@@ -76,7 +76,7 @@ function isIntroAudioKey(value: unknown): value is IntroAudioKey {
 function makeIntroAudioMessage(audioKey: IntroAudioKey = 'start'): ChatMessage {
   return {
     id: 'simulated-audio-start',
-    text: 'Audio 1 de 4 - inicio do chat privado',
+    text: 'Audio 1 de 4 - inicio do Gordin du Xit',
     sender: 'admin',
     kind: 'text',
     audioKey,
@@ -347,8 +347,8 @@ function AuthScreen({
     <main className="client-page login-page">
       <section className="auth-panel" aria-label="Login ou registro">
         <div className="auth-hero">
-          <h1 className="hero-title">Chat Privado</h1>
-          <p className="hero-subtitle">Crie uma conta ou entre para continuar no chat privado.</p>
+          <h1 className="hero-title">Gordin du Xit</h1>
+          <p className="hero-subtitle">Crie uma conta ou entre para continuar no atendimento.</p>
         </div>
 
         <div className="auth-tabs">
@@ -1148,7 +1148,7 @@ export default function ClientChatPage() {
 
   return (
     <main className="client-page">
-      <section className="chat-panel" aria-label="Chat privado">
+      <section className="chat-panel" aria-label="Gordin du Xit">
         <header className="chat-header">
           <div className="client-header-profile">
             <img
@@ -1160,7 +1160,7 @@ export default function ClientChatPage() {
             />
             <div className="client-header-title">
               <span>DA TROPA DO GORDIN</span>
-              <h1>Chat Privado</h1>
+              <h1>Gordin du Xit</h1>
             </div>
           </div>
           <div className="client-header-actions">

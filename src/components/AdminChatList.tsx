@@ -1,6 +1,7 @@
 'use client'
 
 import type { Chat } from '@/types/chat'
+import { formatPhoneOrUsername } from '@/lib/phone'
 
 function formatStatus(chat: Chat) {
   if (chat.accessBlocked === true || chat.accountBlock?.active === true) return 'Bloqueado'
@@ -51,7 +52,7 @@ function formatChatTime(chat: Chat) {
 }
 
 function formatLastMessage(chat: Chat) {
-  const message = chat.lastMessage || 'Novo chat privado'
+  const message = chat.lastMessage || 'Novo atendimento Gordin du Xit'
   if (!chat.lastSender) return message
   if (chat.lastSender === 'admin') return `Voce: ${message}`
   if (chat.lastSender === 'client') return message
@@ -95,9 +96,9 @@ export function AdminChatList({
             {unread && <span className="unread-dot" aria-label="Mensagem nova" />}
             <div className="chat-list-header">
               <div className="chat-list-user">
-                <div className="user-avatar">{chat.accessUsername?.[0]?.toUpperCase() || '?'}</div>
+                <div className="user-avatar">{formatPhoneOrUsername(chat.accessUsername)?.[0]?.toUpperCase() || '?'}</div>
                 <div className="user-info">
-                  <strong className="user-name">{chat.accessUsername || 'Usuario sem nome'}</strong>
+                  <strong className="user-name">{formatPhoneOrUsername(chat.accessUsername, 'Usuario sem nome')}</strong>
                   <span className="user-message">{formatLastMessage(chat)}</span>
                 </div>
               </div>
