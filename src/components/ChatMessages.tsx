@@ -633,7 +633,7 @@ const planDealMap: Record<
     duration: 'Permanente',
     discount: 'Sem renovar',
     note: 'Paga uma vez',
-    realPrice: 'R$ 197,90',
+    realPrice: 'R$ 219,90',
   },
 }
 

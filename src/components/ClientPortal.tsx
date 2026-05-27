@@ -112,14 +112,14 @@ const planVisuals: Record<PlanType, { name: string; tag: string; tone: string; n
     name: 'Permanente',
     tag: 'Melhor valor',
     tone: 'pink',
-    normalPrice: 'R$ 197,90',
+    normalPrice: 'R$ 219,90',
   },
 }
 
 const checkoutPlanPaths: Record<PlanType, string> = {
   weekly: '/paysemanal',
   monthly: '/paymensal',
-  lifetime: '/payvitalicio',
+  lifetime: '/paypermanente',
 }
 
 const planFeatures = [
@@ -289,7 +289,7 @@ const planDealMap: Record<PlanType, { duration: string; discount: string; note: 
     duration: 'Permanente',
     discount: 'Sem renovar',
     note: 'Paga uma vez',
-    realPrice: 'R$ 197,90',
+    realPrice: 'R$ 219,90',
   },
 }
 
@@ -1121,7 +1121,7 @@ function PlanCheckoutPage({
           {canOpenPlugin && (
             <header className="ffp-controls portal-ffp-controls">
               <nav className="portal-mode-switch" aria-label="Area do cliente">
-                <a className="active" href={`/pay${plan === 'weekly' ? 'semanal' : plan === 'monthly' ? 'mensal' : 'vitalicio'}`}>Plano</a>
+                <a className="active" href={`/pay${plan === 'weekly' ? 'semanal' : plan === 'monthly' ? 'mensal' : 'permanente'}`}>Plano</a>
                 <a href="/plugins">Plugin</a>
               </nav>
             </header>
