@@ -3,6 +3,12 @@
 import { FormEvent, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { verifyAdminSession, signInAdmin } from '@/lib/admin-session'
+import {
+  defaultAppUpdateSettings,
+  loadAppUpdateSettings,
+  saveAppUpdateSettings,
+  type AppUpdateSettings,
+} from '@/lib/app-update'
 import { auth } from '@/lib/firebase'
 import { formatPhoneOrUsername } from '@/lib/phone'
 import {
@@ -24,6 +30,16 @@ type AdminAction =
   | 'set_plugin_not_included'
   | 'block_account'
   | 'unblock_account'
+
+type AppUpdateDraft = {
+  enabled: boolean
+  required: boolean
+  latestVersionCode: string
+  latestVersionName: string
+  apkUrl: string
+  message: string
+  changelog: string
+}
 
 const deviceLabels = {
   android: 'Android',
@@ -99,6 +115,18 @@ function paymentStatusLabel(status?: string) {
   }
 
   return status ? labels[status] || status : 'Sem pagamento'
+}
+
+function makeAppUpdateDraft(settings: AppUpdateSettings = defaultAppUpdateSettings): AppUpdateDraft {
+  return {
+    enabled: settings.enabled,
+    required: settings.required,
+    latestVersionCode: String(settings.latestVersionCode || defaultAppUpdateSettings.latestVersionCode),
+    latestVersionName: settings.latestVersionName || defaultAppUpdateSettings.latestVersionName,
+    apkUrl: settings.apkUrl || '',
+    message: settings.message || defaultAppUpdateSettings.message,
+    changelog: settings.changelog || '',
+  }
 }
 
 function searchHaystack(chat: Chat) {
@@ -221,6 +249,163 @@ function StatCards({ chats }: { chats: Chat[] }) {
           <strong>{item.value}</strong>
         </article>
       ))}
+    </section>
+  )
+}
+
+function AppDownloadSettingsPanel() {
+  const [draft, setDraft] = useState<AppUpdateDraft>(() => makeAppUpdateDraft())
+  const [open, setOpen] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('Carregando configuracao do download...')
+
+  useEffect(() => {
+    let active = true
+
+    loadAppUpdateSettings()
+      .then((settings) => {
+        if (!active) return
+        setDraft(makeAppUpdateDraft(settings))
+        setStatus(
+          settings.apkUrl
+            ? `Download cadastrado: v${settings.latestVersionName || settings.latestVersionCode}.`
+            : 'Cadastre o link do APK para liberar o download.',
+        )
+      })
+      .catch((error) => {
+        if (active) {
+          setStatus(error instanceof Error ? error.message : 'Nao foi possivel carregar o download.')
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  function updateDraft<Key extends keyof AppUpdateDraft>(key: Key, value: AppUpdateDraft[Key]) {
+    setDraft((current) => ({ ...current, [key]: value }))
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+
+    const latestVersionCode = Number.parseInt(draft.latestVersionCode, 10)
+    if (!Number.isFinite(latestVersionCode) || latestVersionCode < 1) {
+      setStatus('Use um version code maior que zero.')
+      return
+    }
+
+    if (draft.enabled && !draft.apkUrl.trim()) {
+      setStatus('Informe o link do APK antes de ligar o download.')
+      return
+    }
+
+    setBusy(true)
+    setStatus('Salvando download do xit...')
+
+    try {
+      const settings = await saveAppUpdateSettings({
+        enabled: draft.enabled,
+        required: draft.required,
+        latestVersionCode,
+        latestVersionName: draft.latestVersionName.trim() || String(latestVersionCode),
+        apkUrl: draft.apkUrl.trim(),
+        message: draft.message.trim() || defaultAppUpdateSettings.message,
+        changelog: draft.changelog.trim(),
+      })
+      setDraft(makeAppUpdateDraft(settings))
+      setStatus(settings.apkUrl ? `Download salvo: v${settings.latestVersionName}.` : 'Download salvo sem link cadastrado.')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Nao foi possivel salvar o download.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className={`new-admin-download ${open ? 'open' : ''}`}>
+      <button className="new-admin-download-toggle" type="button" onClick={() => setOpen((current) => !current)}>
+        <div>
+          <span>Download do xit</span>
+          <strong>{draft.apkUrl ? `v${draft.latestVersionName || draft.latestVersionCode}` : 'Sem APK'}</strong>
+        </div>
+        <b>{open ? 'Fechar' : 'Abrir'}</b>
+      </button>
+
+      {open && (
+        <form className="new-admin-download-form" onSubmit={handleSubmit}>
+          <div className="new-admin-download-grid">
+            <label>
+              <small>Version code</small>
+              <input
+                value={draft.latestVersionCode}
+                onChange={(event) => updateDraft('latestVersionCode', event.target.value)}
+                inputMode="numeric"
+                placeholder="2"
+              />
+            </label>
+            <label>
+              <small>Versao</small>
+              <input
+                value={draft.latestVersionName}
+                onChange={(event) => updateDraft('latestVersionName', event.target.value)}
+                placeholder="1.1"
+              />
+            </label>
+          </div>
+
+          <label>
+            <small>Link do APK</small>
+            <input
+              value={draft.apkUrl}
+              onChange={(event) => updateDraft('apkUrl', event.target.value)}
+              placeholder="https://..."
+            />
+          </label>
+
+          <label>
+            <small>Mensagem para o app</small>
+            <input
+              value={draft.message}
+              onChange={(event) => updateDraft('message', event.target.value)}
+              placeholder="Nova versao disponivel"
+            />
+          </label>
+
+          <label>
+            <small>Notas da versao</small>
+            <textarea
+              value={draft.changelog}
+              onChange={(event) => updateDraft('changelog', event.target.value)}
+              placeholder="O que mudou nesta versao"
+            />
+          </label>
+
+          <div className="new-admin-download-switches">
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(event) => updateDraft('enabled', event.target.checked)}
+              />
+              <span>Ligar download</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.required}
+                onChange={(event) => updateDraft('required', event.target.checked)}
+              />
+              <span>Atualizacao obrigatoria</span>
+            </label>
+          </div>
+
+          <button type="submit" disabled={busy}>{busy ? 'Salvando...' : 'Salvar download'}</button>
+          {status && <small className="new-admin-download-status">{status}</small>}
+        </form>
+      )}
     </section>
   )
 }
@@ -598,6 +783,8 @@ export default function AdminPage() {
           </div>
         </section>
 
+        <AppDownloadSettingsPanel />
+
         <label className="new-admin-search">
           <span>Pesquisar</span>
           <input
@@ -646,6 +833,7 @@ function AdminStyles() {
       .new-admin-login-card span,
       .new-admin-title span,
       .new-admin-provider span,
+      .new-admin-download-toggle span,
       .new-admin-search span,
       .new-admin-detail header span,
       .new-admin-info-grid span,
@@ -726,7 +914,7 @@ function AdminStyles() {
       .new-admin-sidebar {
         min-height: calc(100vh - 28px);
         display: grid;
-        grid-template-rows: auto auto auto auto 1fr;
+        grid-template-rows: auto auto auto auto auto 1fr;
         gap: 12px;
         padding: 12px;
       }
@@ -758,6 +946,7 @@ function AdminStyles() {
 
       .new-admin-stats article,
       .new-admin-provider,
+      .new-admin-download,
       .new-admin-info-grid article {
         border: 1px solid #e2e8f0;
         border-radius: 8px;
@@ -790,6 +979,110 @@ function AdminStyles() {
       .new-admin-provider button.active {
         background: #0f172a;
         color: #ffffff;
+      }
+
+      .new-admin-download {
+        display: grid;
+        gap: 10px;
+      }
+
+      .new-admin-download-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: #0f172a;
+        padding: 0;
+        text-align: left;
+      }
+
+      .new-admin-download-toggle div {
+        display: grid;
+        gap: 3px;
+      }
+
+      .new-admin-download-toggle strong {
+        font-size: 15px;
+      }
+
+      .new-admin-download-toggle b {
+        border: 1px solid #dbe3ee;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      .new-admin-download-form {
+        display: grid;
+        gap: 9px;
+      }
+
+      .new-admin-download-form label {
+        display: grid;
+        gap: 5px;
+      }
+
+      .new-admin-download-form small,
+      .new-admin-download-status {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .new-admin-download-form input,
+      .new-admin-download-form textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 10px;
+        outline: none;
+      }
+
+      .new-admin-download-form textarea {
+        min-height: 74px;
+        resize: vertical;
+      }
+
+      .new-admin-download-form input:focus,
+      .new-admin-download-form textarea:focus {
+        border-color: #0ea5e9;
+        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.14);
+      }
+
+      .new-admin-download-grid,
+      .new-admin-download-switches {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .new-admin-download-switches label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 8px;
+      }
+
+      .new-admin-download-switches input {
+        width: auto;
+      }
+
+      .new-admin-download-form button {
+        min-height: 40px;
+        border-radius: 8px;
+        background: #0f172a;
+        color: #ffffff;
+        font-weight: 900;
       }
 
       .new-admin-search {

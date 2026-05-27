@@ -6,6 +6,7 @@ import {
   addPaymentTrackingToLink,
   ChatAccessError,
   checkClientSessionAccess,
+  clearClientSession,
   deviceOptions,
   ensureAnonymousSession,
   getClientId,
@@ -1393,13 +1394,11 @@ function PluginPage({
           </header>
 
           <div className="ffp-content">
-            <section className="ffp-hero">
-              <span className="ffp-badge">Gordin du Xit | ServiceSync Core</span>
+            <section className="ffp-hero portal-plugin-hero">
               <h3>
                 Plugin
                 <strong>ServiceSync</strong>
               </h3>
-              <p>Ativacao extra para fechar a sincronizacao do Gordin du Xit, liberar o modulo pendente e deixar a conta pronta para jogar.</p>
             </section>
 
             <div className="ffp-main-grid portal-plugin-grid">
@@ -1427,7 +1426,7 @@ function PluginPage({
                     <div>
                       <span>Plugin</span>
                       <h4>ServiceSync Core</h4>
-                      <small>Ativacao unica</small>
+                      <small>Pagamento unico</small>
                     </div>
                   </div>
 
@@ -1445,7 +1444,7 @@ function PluginPage({
                       'Execucao completa sem erro de sincronizacao',
                       'Conta pronta para jogar apos a confirmacao',
                       'ServiceSync Core ativado nesta conta',
-                      'Uso vitalicio com atualizacoes gratuitas',
+                      'Ganha a versao vitalicia e atualizacao gratuitas',
                     ].map((item) => (
                       <span key={item}>
                         <i aria-hidden="true" />
@@ -1463,7 +1462,7 @@ function PluginPage({
 
                   <div className="ffp-price">
                     <div className="ffp-price-compare">
-                      <span>Ativacao unica</span>
+                      <span>Pagamento unico</span>
                       <s>R$ 149,90</s>
                     </div>
                     <div className="ffp-price-row">
@@ -1500,45 +1499,42 @@ function PluginPage({
                     <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
                   )}
 
-                  <div className="ffp-social-stats portal-plugin-social-stats" aria-label="Prova social do plugin">
-                    <span className="ffp-stat bought">
-                      <i aria-hidden="true" />
-                      <b>+{livePluginStats.boughtToday}</b>
-                      <small>plugins hoje</small>
-                    </span>
-                    <span className="ffp-stat active">
-                      <i aria-hidden="true" />
-                      <b>+{livePluginStats.activeUsers}</b>
-                      <small>plugins ativos</small>
-                    </span>
-                  </div>
-
-                  <div className="portal-plugin-outcome" aria-label="Resultado apos ativar">
-                    <span>
-                      <b>OK</b>
-                      Todas as funcoes
-                    </span>
-                    <span>
-                      <b>OK</b>
-                      Pronto para jogar
-                    </span>
-                    <span>
-                      <b>OK</b>
-                      Uso vitalicio
-                    </span>
-                  </div>
-
-                  <div className="portal-plugin-modules" aria-label="Modulos verificados">
-                    {pluginModules.map((module) => {
-                      const missing = module === 'ServiceSync Core' && !active
-
-                      return (
-                        <span key={module} className={missing ? 'missing' : 'ready'}>
-                          <b>{missing ? '!' : 'OK'}</b>
-                          <strong>{module}</strong>
-                        </span>
-                      )
-                    })}
+                  <div className="portal-plugin-after" aria-label="Resultado apos ativar o plugin">
+                    <div className="portal-plugin-after-head">
+                      <span>Depois do pagamento</span>
+                      <strong>Conta pronta para jogar</strong>
+                    </div>
+                    <div className="portal-plugin-after-grid">
+                      <span>
+                        <b>1</b>
+                        <strong>ServiceSync ativo</strong>
+                        <small>O modulo pendente e liberado nesta conta.</small>
+                      </span>
+                      <span>
+                        <b>2</b>
+                        <strong>Funcoes completas</strong>
+                        <small>O xit deixa de reverter os controles.</small>
+                      </span>
+                      <span>
+                        <b>3</b>
+                        <strong>Uso vitalicio</strong>
+                        <small>Plano permanente e atualizacoes gratuitas.</small>
+                      </span>
+                    </div>
+                    <div className="portal-plugin-proof-row">
+                      <span>
+                        <b>{active ? '7/7' : '6/7'}</b>
+                        <small>{active ? 'modulos sincronizados' : 'modulos prontos, falta o ServiceSync'}</small>
+                      </span>
+                      <span>
+                        <b>+{livePluginStats.activeUsers}</b>
+                        <small>clientes com plugin ativo</small>
+                      </span>
+                      <span>
+                        <b>+{livePluginStats.boughtToday}</b>
+                        <small>plugins hoje</small>
+                      </span>
+                    </div>
                   </div>
                 </article>
               </div>
@@ -1866,11 +1862,13 @@ export function ClientPortal({
   checkoutPlan,
   downloadPage = false,
   previewAuth = false,
+  previewPlugin = false,
 }: {
   initialTab?: PortalTab
   checkoutPlan?: PlanType
   downloadPage?: boolean
   previewAuth?: boolean
+  previewPlugin?: boolean
 }) {
   const [chatId, setChatId] = useState('')
   const [accountId, setAccountId] = useState('')
@@ -1950,6 +1948,22 @@ export function ClientPortal({
         const sessionAccess = await checkClientSessionAccess()
         if (sessionAccess.blocked) {
           setBlockedAccess(true)
+          setLoading(false)
+          return
+        }
+
+        const params = new URLSearchParams(window.location.search)
+        const loginRequested = params.get('login') === '1' || params.get('entrar') === '1'
+
+        if (loginRequested) {
+          clearClientSession()
+          storeAccountBlocked(false)
+          setChatMeta(null)
+          setChatId('')
+          setAccountId('')
+          setSelectedDevice('')
+          setSelectedPlan('')
+          setBlockedAccess(false)
           setLoading(false)
           return
         }
@@ -2190,6 +2204,21 @@ export function ClientPortal({
         error=""
         onSubmit={async () => ({ message: 'Preview visual: use a pagina normal para entrar.' })}
       />
+    )
+  }
+
+  if (previewPlugin) {
+    return (
+      <main className="portal-shell">
+        <PluginPage
+          chat={null}
+          saving={false}
+          pluginLink={pluginPaymentLink}
+          onBuy={() => undefined}
+          onBack={() => window.location.assign('/planos')}
+        />
+        <PortalStyles />
+      </main>
     )
   }
 
@@ -3296,15 +3325,16 @@ function PortalStyles() {
       }
 
       .portal-plugin-card-list .ffp-price-card {
-        padding-top: 4px;
+        position: relative;
+        padding-top: 18px;
       }
 
       .portal-plugin-card-list .ffp-top-badge {
-        position: relative !important;
-        top: auto !important;
-        right: auto !important;
+        position: absolute !important;
+        top: 16px !important;
+        right: 16px !important;
         width: max-content;
-        margin: 12px 14px 0 auto;
+        margin: 0;
         z-index: 4;
       }
 
@@ -3319,8 +3349,9 @@ function PortalStyles() {
       }
 
       .portal-plugin-card-list .ffp-plan-head {
-        padding-top: 7px !important;
-        padding-right: 14px !important;
+        align-items: center !important;
+        padding-top: 0 !important;
+        padding-right: 150px !important;
       }
 
       .portal-plugin-card-list .ffp-plan-head > div {
@@ -3395,6 +3426,118 @@ function PortalStyles() {
 
       .ffp-item-list .ffp-plugin-included-note small {
         color: #ef4444;
+      }
+
+      .portal-plugin-after {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        gap: 10px;
+        margin: 14px 18px 18px;
+        border: 1px solid rgba(20, 184, 166, 0.22);
+        border-radius: 18px;
+        background:
+          linear-gradient(135deg, rgba(240, 253, 250, 0.96), rgba(248, 250, 252, 0.96));
+        padding: 14px;
+        box-shadow:
+          0 14px 30px rgba(15, 23, 42, 0.07),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      }
+
+      .portal-plugin-after-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .portal-plugin-after-head span {
+        color: #0f766e;
+        font-size: 10px;
+        font-weight: 950;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .portal-plugin-after-head strong {
+        color: #0f172a;
+        font-size: 13px;
+        font-weight: 950;
+        text-align: right;
+      }
+
+      .portal-plugin-after-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .portal-plugin-after-grid span {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 2px 9px;
+        align-items: center;
+        border: 1px solid rgba(20, 184, 166, 0.16);
+        border-radius: 13px;
+        background: #ffffff;
+        padding: 9px;
+      }
+
+      .portal-plugin-after-grid b {
+        width: 30px;
+        height: 30px;
+        grid-row: span 2;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #14b8a6, #22c55e);
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 950;
+      }
+
+      .portal-plugin-after-grid strong {
+        color: #0f172a;
+        font-size: 12px;
+        font-weight: 950;
+        line-height: 1.1;
+      }
+
+      .portal-plugin-after-grid small {
+        color: #64748b;
+        font-size: 11px;
+        font-weight: 750;
+        line-height: 1.25;
+      }
+
+      .portal-plugin-proof-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .portal-plugin-proof-row span {
+        min-height: 58px;
+        display: grid;
+        align-content: center;
+        gap: 3px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 13px;
+        background: #ffffff;
+        padding: 8px;
+        text-align: center;
+      }
+
+      .portal-plugin-proof-row b {
+        color: #0f766e;
+        font-size: 15px;
+        font-weight: 950;
+      }
+
+      .portal-plugin-proof-row small {
+        color: #475569;
+        font-size: 9.5px;
+        font-weight: 850;
+        line-height: 1.15;
       }
 
       .portal-plugin-modules {
@@ -4862,10 +5005,31 @@ function PortalStyles() {
       }
 
       .portal-plugin-ffp .ffp-hero h3 {
-        background: linear-gradient(135deg, #111827, #0f766e 52%, #ea580c) !important;
-        -webkit-background-clip: text !important;
-        background-clip: text !important;
-        color: transparent !important;
+        max-width: 620px !important;
+        margin: 14px auto 0 !important;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #07111f !important;
+        -webkit-text-fill-color: currentColor !important;
+        font-size: 62px !important;
+        line-height: 0.9 !important;
+        letter-spacing: 0 !important;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.98),
+          0 14px 26px rgba(15, 23, 42, 0.24) !important;
+      }
+
+      .portal-plugin-ffp .ffp-hero h3 strong {
+        display: block !important;
+        background: none !important;
+        -webkit-background-clip: initial !important;
+        background-clip: initial !important;
+        color: #04766f !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow:
+          0 2px 0 rgba(255, 255, 255, 0.98),
+          0 14px 26px rgba(4, 120, 110, 0.26) !important;
       }
 
       .portal-plugin-ffp .portal-plugin-grid {
