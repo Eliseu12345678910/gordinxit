@@ -181,6 +181,11 @@ export async function POST(request: NextRequest) {
         continue
       }
 
+      const existingAmountCents = Number(existing.amountCents)
+      if (Number.isFinite(existingAmountCents) && existingAmountCents !== selectedPlan.amountCents) {
+        continue
+      }
+
       let existingStatus = getString(existing.status) || 'pending'
       let existingQrCode = getString(existing.qrCode)
       let existingQrCodeBase64 = getString(existing.qrCodeBase64)

@@ -17,9 +17,18 @@ function cleanString(value: unknown, fallback: string, maxLength = 80) {
 
 function cleanAmountCents(value: unknown, fallback: number) {
   const numeric = Number(value)
-  if (!Number.isInteger(numeric)) return fallback
-  if (numeric < 100 || numeric > 100000) return fallback
-  return numeric
+  if (!Number.isFinite(numeric)) return fallback
+  const amountCents = Number.isInteger(numeric) && numeric > 0 && numeric < 100
+    ? numeric * 100
+    : Math.round(numeric)
+  if (amountCents < 100 || amountCents > 100000) return fallback
+  return amountCents
+}
+
+function priceToAmountCents(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined
+  return Math.round(numeric * 100)
 }
 
 function cleanDurationDays(value: unknown, fallback: number | null) {
@@ -45,7 +54,7 @@ function cleanHttpsUrl(value: unknown, fallback: string) {
 function mergePlan(plan: PlanType, raw: unknown): PlanCatalogItem {
   const fallback = defaultPlanCatalog[plan]
   const data = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-  const amountCents = cleanAmountCents(data.amountCents ?? data.priceCents, fallback.amountCents)
+  const amountCents = cleanAmountCents(data.amountCents ?? data.priceCents ?? priceToAmountCents(data.price), fallback.amountCents)
 
   return {
     ...fallback,
@@ -64,7 +73,7 @@ function mergePlan(plan: PlanType, raw: unknown): PlanCatalogItem {
 function mergeResellerPlan(context: ResellerAccessType, plan: PlanType, raw: unknown): PlanCatalogItem {
   const fallback = defaultResellerPlanCatalog[context][plan]
   const data = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-  const amountCents = cleanAmountCents(data.amountCents ?? data.priceCents, fallback.amountCents)
+  const amountCents = cleanAmountCents(data.amountCents ?? data.priceCents ?? priceToAmountCents(data.price), fallback.amountCents)
 
   return {
     ...fallback,
