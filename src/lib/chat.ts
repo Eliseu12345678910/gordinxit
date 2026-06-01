@@ -1,29 +1,24 @@
 import {
-  addDoc,
   collection,
   doc,
   limit,
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
-  setDoc,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { signInAnonymously } from 'firebase/auth'
 import { auth, db } from './firebase'
+import { defaultPlanCatalog, isPlanType, planCatalogToOptions } from './payment-catalog'
 import { getSecureItem, listStorageKeys, removeSecureItem, setSecureItem } from './secure-storage'
 import type {
   AdminSettings,
   Chat,
-  ChatMessage,
   ClientActivity,
   ClientActivityType,
   DeviceType,
   FunnelStatus,
-  MessageSender,
   PlanType,
-  IntroAudioKey,
   PaymentProvider,
   PaymentTarget,
 } from '@/types/chat'
@@ -34,7 +29,6 @@ const USERNAME_KEY = 'chat-atendimento-username-v3'
 const ACCOUNT_ID_KEY = 'chat-atendimento-account-id-v3'
 const DEVICE_KEY_PREFIX = 'chat-atendimento-device-v3'
 const PLAN_KEY_PREFIX = 'chat-atendimento-plan-v3'
-const INTRO_AUDIO_KEY_PREFIX = 'chat-atendimento-intro-audio-v1'
 const BLOCKED_ACCOUNT_KEY = 'chat-atendimento-account-blocked-v1'
 const kiwifyPluginLink = 'https://pay.kiwify.com.br/uOARny8'
 
@@ -71,50 +65,34 @@ export const planOptions: Array<{
   priceLabel: string
   badge: string
   detail: string
-}> = [
-  {
-    value: 'weekly',
-    label: 'Semanal',
-    price: 17.9,
-    priceLabel: 'R$ 17,90',
-    badge: '',
-    detail: '7 dias de acesso ao painel.',
-  },
-  {
-    value: 'monthly',
-    label: 'Mensal',
-    price: 44.9,
-    priceLabel: 'R$ 44,90',
-    badge: 'Mais comprado',
-    detail: '30 dias de acesso ao painel.',
-  },
-  {
-    value: 'lifetime',
-    label: 'Vitalicio',
-    price: 124.9,
-    priceLabel: 'R$ 124,90',
-    badge: '',
-    detail: 'Acesso permanente ao painel.',
-  },
-]
+}> = planCatalogToOptions(defaultPlanCatalog)
 
 export const paymentLinks: Record<PlanType, string> = {
-  weekly: 'https://go.perfectpay.com.br/PPU38CPSFTN',
-  monthly: 'https://go.perfectpay.com.br/PPU38CP7M55',
-  lifetime: 'https://go.perfectpay.com.br/PPU38CP7M56',
+  daily: defaultPlanCatalog.daily.perfectPayLink,
+  weekly: defaultPlanCatalog.weekly.perfectPayLink,
+  monthly: defaultPlanCatalog.monthly.perfectPayLink,
+  lifetime: defaultPlanCatalog.lifetime.perfectPayLink,
 }
 
 export const paymentProviderLabels: Record<PaymentProvider, string> = {
   'perfect-pay': 'Perfect Pay',
   kiwify: 'Kiwify',
+  'mercado-pago': 'Mercado Pago',
 }
 
 export const paymentLinksByProvider: Record<PaymentProvider, Record<PlanType, string>> = {
   'perfect-pay': paymentLinks,
   kiwify: {
+    daily: process.env.NEXT_PUBLIC_KIWIFY_DAILY_LINK || '',
     weekly: process.env.NEXT_PUBLIC_KIWIFY_WEEKLY_LINK || '',
     monthly: process.env.NEXT_PUBLIC_KIWIFY_MONTHLY_LINK || '',
     lifetime: process.env.NEXT_PUBLIC_KIWIFY_LIFETIME_LINK || '',
+  },
+  'mercado-pago': {
+    daily: '',
+    weekly: '',
+    monthly: '',
+    lifetime: '',
   },
 }
 
@@ -124,10 +102,11 @@ export const pluginPaymentLinksByProvider: Record<PaymentProvider, string> = {
     process.env.NEXT_PUBLIC_KIWIFY_PLUGIN_LINK ||
     kiwifyPluginLink,
   kiwify: process.env.NEXT_PUBLIC_KIWIFY_PLUGIN_LINK || kiwifyPluginLink,
+  'mercado-pago': '',
 }
 
 export function isPaymentProvider(value: unknown): value is PaymentProvider {
-  return value === 'perfect-pay' || value === 'kiwify'
+  return value === 'perfect-pay' || value === 'kiwify' || value === 'mercado-pago'
 }
 
 export function getPaymentLinks(provider?: PaymentProvider) {
@@ -181,14 +160,6 @@ export function makeId(prefix: string) {
 
 function isDeviceType(value: unknown): value is DeviceType {
   return value === 'android' || value === 'ios' || value === 'emulator'
-}
-
-function isPlanType(value: unknown): value is PlanType {
-  return value === 'weekly' || value === 'monthly' || value === 'lifetime'
-}
-
-function isIntroAudioKey(value: unknown): value is IntroAudioKey {
-  return value === 'start-live' || value === 'start'
 }
 
 function normalizeAccessProfile(profile?: { device?: unknown; plan?: unknown }) {
@@ -264,7 +235,6 @@ export function clearClientSession() {
     ACCOUNT_ID_KEY,
     DEVICE_KEY_PREFIX,
     PLAN_KEY_PREFIX,
-    INTRO_AUDIO_KEY_PREFIX,
   ]
 
   listStorageKeys().forEach((key) => {
@@ -333,12 +303,14 @@ export class ChatAccessError extends Error {
 export async function requestChatAccess({
   username,
   password,
+  device,
   mode,
   clientId,
   requestedChatId,
 }: {
   username: string
   password?: string
+  device?: DeviceType
   mode: 'login' | 'signup'
   clientId: string
   requestedChatId?: string
@@ -355,6 +327,7 @@ export async function requestChatAccess({
       idToken,
       username,
       password,
+      device,
       mode,
       clientId,
       requestedChatId,
@@ -370,7 +343,6 @@ export async function requestChatAccess({
       device?: unknown
       plan?: unknown
     }
-    introAudioKey?: unknown
     code?: string
     error?: string
   }
@@ -385,7 +357,6 @@ export async function requestChatAccess({
     recovered: Boolean(payload.recovered),
     accessUsername: payload.accessUsername || username,
     profile: normalizeAccessProfile(payload.profile),
-    introAudioKey: isIntroAudioKey(payload.introAudioKey) ? payload.introAudioKey : 'start',
   }
 }
 
@@ -496,45 +467,6 @@ export async function registerPaymentClick({
   }
 }
 
-export async function registerClientButtonClick({
-  chatId,
-  accountId,
-  messageId,
-  buttonKey,
-  buttonLabel,
-}: {
-  chatId: string
-  accountId: string
-  messageId: string
-  buttonKey: string
-  buttonLabel: string
-}) {
-  const user = await ensureAnonymousSession()
-  const idToken = await user.getIdToken()
-
-  const response = await fetch('/api/chat/profile', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      idToken,
-      chatId,
-      accountId,
-      buttonAction: 'client_button_click',
-      messageId,
-      buttonKey,
-      buttonLabel,
-    }),
-  })
-
-  const payload = (await response.json()) as { error?: string }
-
-  if (!response.ok) {
-    throw new Error(payload.error || 'Nao foi possivel registrar o clique.')
-  }
-}
-
 export async function registerClientActivity({
   chatId,
   accountId,
@@ -577,38 +509,6 @@ export async function registerClientActivity({
   }
 }
 
-export async function sendDeviceIntroStep({
-  chatId,
-  accountId,
-  step,
-}: {
-  chatId: string
-  accountId: string
-  step: 'features' | 'question'
-}) {
-  const user = await ensureAnonymousSession()
-  const idToken = await user.getIdToken()
-
-  const response = await fetch('/api/chat/profile', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      idToken,
-      chatId,
-      accountId,
-      introStep: step,
-    }),
-  })
-
-  const payload = (await response.json()) as { error?: string }
-
-  if (!response.ok) {
-    throw new Error(payload.error || 'Nao foi possivel enviar a introducao.')
-  }
-}
-
 export async function updateChatFunnel({
   chatId,
   action,
@@ -620,11 +520,6 @@ export async function updateChatFunnel({
   chatId: string
   action:
     | FunnelStatus
-    | 'send_payment_link'
-    | 'send_plugin_payment_link'
-    | 'send_plugin_diagnostic'
-    | 'send_app_download_link'
-    | 'send_plans'
     | 'deactivate_plan'
     | 'activate_plugin'
     | 'set_plugin_included'
@@ -663,62 +558,8 @@ export async function updateChatFunnel({
   }
 }
 
-async function requestAdminMessageAction({
-  chatId,
-  messageId,
-  action,
-  text,
-}: {
-  chatId: string
-  messageId: string
-  action: 'edit_message' | 'delete_message'
-  text?: string
-}) {
-  const user = auth.currentUser
-  if (!user || user.isAnonymous) throw new Error('Admin nao autenticado.')
-
-  const idToken = await user.getIdToken()
-  const response = await fetch('/api/chat/admin', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      idToken,
-      chatId,
-      messageId,
-      messageText: text,
-      action,
-    }),
-  })
-
-  const payload = (await response.json()) as { error?: string }
-
-  if (!response.ok) {
-    throw new Error(payload.error || 'Nao foi possivel atualizar a mensagem.')
-  }
-}
-
-export async function editChatMessage(chatId: string, messageId: string, text: string) {
-  return requestAdminMessageAction({
-    chatId,
-    messageId,
-    action: 'edit_message',
-    text,
-  })
-}
-
-export async function deleteChatMessage(chatId: string, messageId: string) {
-  return requestAdminMessageAction({
-    chatId,
-    messageId,
-    action: 'delete_message',
-  })
-}
-
 async function requestAdminSettingsAction(
-  action: 'get_live_intro' | 'set_live_intro' | 'set_payment_provider',
-  liveIntroEnabled?: boolean,
+  action: 'get_payment_settings' | 'set_payment_provider',
   paymentProvider?: PaymentProvider,
 ) {
   const user = auth.currentUser
@@ -733,7 +574,6 @@ async function requestAdminSettingsAction(
     body: JSON.stringify({
       idToken,
       action,
-      liveIntroEnabled,
       paymentProvider,
     }),
   })
@@ -748,55 +588,11 @@ async function requestAdminSettingsAction(
 }
 
 export async function loadAdminSettings() {
-  return requestAdminSettingsAction('get_live_intro')
-}
-
-export async function updateLiveIntroSetting(liveIntroEnabled: boolean) {
-  return requestAdminSettingsAction('set_live_intro', liveIntroEnabled)
+  return requestAdminSettingsAction('get_payment_settings')
 }
 
 export async function updatePaymentProviderSetting(paymentProvider: PaymentProvider) {
-  return requestAdminSettingsAction('set_payment_provider', undefined, paymentProvider)
-}
-
-export async function upsertChat(chatId: string, chat: Partial<Chat>) {
-  await setDoc(
-    doc(db, 'chats', chatId),
-    {
-      ...chat,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  )
-}
-
-export async function addMessage(chatId: string, sender: MessageSender, text: string) {
-  const trimmed = text.trim()
-  if (!trimmed) return
-
-  await addDoc(collection(db, 'chats', chatId, 'messages'), {
-    text: trimmed,
-    sender,
-    createdAt: serverTimestamp(),
-  })
-
-  await upsertChat(chatId, {
-    lastMessage: trimmed,
-    lastSender: sender,
-    lastMessageAt: serverTimestamp() as unknown as Chat['lastMessageAt'],
-  })
-}
-
-export function listenMessages(
-  chatId: string,
-  callback: (messages: ChatMessage[]) => void,
-): Unsubscribe {
-  return onSnapshot(
-    query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc')),
-    (snapshot) => {
-      callback(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as ChatMessage))
-    },
-  )
+  return requestAdminSettingsAction('set_payment_provider', paymentProvider)
 }
 
 export function listenChat(chatId: string, callback: (chat: Chat | null) => void): Unsubscribe {

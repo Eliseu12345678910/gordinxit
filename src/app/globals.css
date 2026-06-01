@@ -11128,6 +11128,12 @@ button {
     linear-gradient(145deg, rgba(16, 18, 33, 0.96), rgba(3, 4, 10, 0.94));
 }
 
+.ffp-daily {
+  --ffp-a: #86efac;
+  --ffp-b: #22c55e;
+  --ffp-c: #16a34a;
+}
+
 .ffp-weekly {
   --ffp-a: #fcd34d;
   --ffp-b: #f97316;
@@ -11180,6 +11186,10 @@ button {
   width: 23px;
   height: 23px;
   background: #02030a;
+}
+
+.ffp-daily .ffp-plan-icon::before {
+  clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 56%, 79% 92%, 50% 70%, 21% 92%, 32% 56%, 2% 35%, 39% 35%);
 }
 
 .ffp-weekly .ffp-plan-icon::before {

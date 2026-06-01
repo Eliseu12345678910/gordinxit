@@ -35,3 +35,13 @@ export function getAdminAuth() {
 export function getAdminDb() {
   return getFirestore(getAdminApp())
 }
+
+export function isFirebaseAuthTokenError(error: unknown) {
+  if (!error || typeof error !== 'object') return false
+  const code = String((error as { code?: unknown }).code || '')
+  const message = String((error as { message?: unknown }).message || '').toLowerCase()
+  return code.startsWith('auth/')
+    || message.includes('verifyidtoken')
+    || message.includes('firebase id token')
+    || message.includes('id token')
+}

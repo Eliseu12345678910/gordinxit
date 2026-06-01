@@ -452,7 +452,7 @@ export default function ContatoPage() {
         .gz-corner-pointer {
           position: fixed;
           top: 10px;
-          right: 10px;
+          right: 26px;
           z-index: 50;
           display: grid;
           justify-items: end;
@@ -462,12 +462,12 @@ export default function ContatoPage() {
 
         .gz-corner-pointer i {
           position: relative;
-          width: 108px;
+          width: 104px;
           height: 7px;
-          margin-right: 8px;
+          margin-right: 18px;
           border-radius: 999px;
           background: #ff0033;
-          transform: rotate(-42deg);
+          transform: rotate(-34deg);
           transform-origin: right center;
           box-shadow:
             0 0 0 4px rgba(255, 255, 255, 0.86),

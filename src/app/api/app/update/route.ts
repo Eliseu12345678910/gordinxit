@@ -1,7 +1,8 @@
 import { FieldValue } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminUser } from '@/lib/admin-auth'
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
+import { isAccountAccessBlocked } from '@/lib/account-block'
+import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
 
 export const runtime = 'nodejs'
 
@@ -55,6 +56,47 @@ function normalizeSettings(data?: Record<string, unknown>): AppUpdateSettings {
   }
 }
 
+function withoutDownload(settings: AppUpdateSettings): AppUpdateSettings {
+  return {
+    ...settings,
+    apkUrl: '',
+  }
+}
+
+function timestampMillis(value: unknown) {
+  if (!value || typeof value !== 'object') return 0
+  const maybeTimestamp = value as { toMillis?: () => number; seconds?: number }
+  if (typeof maybeTimestamp.toMillis === 'function') return maybeTimestamp.toMillis()
+  if (typeof maybeTimestamp.seconds === 'number') return maybeTimestamp.seconds * 1000
+  return 0
+}
+
+function hasActiveDownloadPlan(record: unknown) {
+  if (!record || typeof record !== 'object') return false
+  const data = record as Record<string, unknown>
+  const subscription = data.subscription && typeof data.subscription === 'object'
+    ? data.subscription as Record<string, unknown>
+    : {}
+  const status = String(subscription.status || '')
+  const plan = String(subscription.plan || '')
+  const expiresMillis = timestampMillis(subscription.expiresAt)
+  return status === 'active'
+    && ['daily', 'weekly', 'monthly', 'lifetime'].includes(plan)
+    && (!expiresMillis || expiresMillis > Date.now())
+}
+
+function canDownloadDevice(record: unknown) {
+  if (!record || typeof record !== 'object') return false
+  const data = record as Record<string, unknown>
+  const profile = data.profile && typeof data.profile === 'object'
+    ? data.profile as Record<string, unknown>
+    : data.leadProfile && typeof data.leadProfile === 'object'
+      ? data.leadProfile as Record<string, unknown>
+      : {}
+  const device = String(profile.device || '')
+  return device === 'android' || device === 'emulator'
+}
+
 async function readSettings() {
   const adminDb = getAdminDb()
   const snapshot = await adminDb.collection(settingsCollection).doc(appUpdateDoc).get()
@@ -64,25 +106,67 @@ async function readSettings() {
 export async function GET(request: NextRequest) {
   try {
     const settings = await readSettings()
+    let safeSettings = withoutDownload(settings)
     const currentVersionCode = toPositiveInt(
       new URL(request.url).searchParams.get('versionCode'),
       0,
     )
+    const authHeader = request.headers.get('authorization') || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : ''
+
+    if (token) {
+      const adminAuth = getAdminAuth()
+      const adminDb = getAdminDb()
+      const decodedToken = await adminAuth.verifyIdToken(token)
+      const isAdmin = await isAdminUser(decodedToken.uid, decodedToken.email)
+
+      if (isAdmin) {
+        safeSettings = settings
+      } else {
+        const chatId = request.nextUrl.searchParams.get('chatId')?.trim() || ''
+        const accountId = request.nextUrl.searchParams.get('accountId')?.trim().toLowerCase() || ''
+        const [chatSnapshot, accountSnapshot] = await Promise.all([
+          chatId ? adminDb.collection('chats').doc(chatId).get() : Promise.resolve(null),
+          accountId ? adminDb.collection('accounts').doc(accountId).get() : Promise.resolve(null),
+        ])
+        const chat = chatSnapshot?.data()
+        const account = accountSnapshot?.data()
+        const participantUids = Array.isArray(chat?.participantUids) ? chat.participantUids : []
+        const chatAccountId = String(chat?.accountId || chat?.usernameKey || '').toLowerCase()
+        const ownsChat = Boolean(chatSnapshot?.exists && accountId && chatAccountId === accountId)
+        const participates = participantUids.includes(decodedToken.uid)
+
+        if (
+          ownsChat &&
+          participates &&
+          !isAccountAccessBlocked(chat) &&
+          !isAccountAccessBlocked(account) &&
+          (hasActiveDownloadPlan(account) || hasActiveDownloadPlan(chat)) &&
+          (canDownloadDevice(account) || canDownloadDevice(chat))
+        ) {
+          safeSettings = settings
+        }
+      }
+    }
+
     const updateAvailable =
-      settings.enabled &&
-      Boolean(settings.apkUrl) &&
-      settings.latestVersionCode > currentVersionCode
+      safeSettings.enabled &&
+      Boolean(safeSettings.apkUrl) &&
+      safeSettings.latestVersionCode > currentVersionCode
 
     return NextResponse.json({
-      ...settings,
+      ...safeSettings,
       currentVersionCode,
       updateAvailable,
     })
   } catch (error) {
+    if (isFirebaseAuthTokenError(error)) {
+      return NextResponse.json({ error: 'Sessao invalida.' }, { status: 401 })
+    }
     console.error('App update settings error:', error)
     return NextResponse.json(
       {
-        ...defaultSettings,
+        ...withoutDownload(defaultSettings),
         currentVersionCode: 0,
         updateAvailable: false,
         error: 'Nao foi possivel buscar a atualizacao do app.',
@@ -149,6 +233,9 @@ export async function POST(request: NextRequest) {
       updateAvailable: false,
     })
   } catch (error) {
+    if (isFirebaseAuthTokenError(error)) {
+      return NextResponse.json({ error: 'Sessao invalida.' }, { status: 401 })
+    }
     console.error('App update save error:', error)
     return NextResponse.json({ error: 'Nao foi possivel salvar a atualizacao.' }, { status: 500 })
   }

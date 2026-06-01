@@ -1,7 +1,9 @@
 import { FieldValue, type DocumentReference } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
+import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
+import { isPlanType } from '@/lib/payment-catalog'
+import { loadServerPlanCatalog } from '@/lib/payment-catalog-server'
 
 export const runtime = 'nodejs'
 
@@ -11,48 +13,22 @@ const deviceLabels = {
   emulator: 'Emulador (PC)',
 } as const
 
-const plans = {
-  weekly: {
-    label: 'Semanal',
-    price: 17.9,
-    priceLabel: 'R$ 17,90',
-  },
-  monthly: {
-    label: 'Mensal',
-    price: 44.9,
-    priceLabel: 'R$ 44,90',
-  },
-  lifetime: {
-    label: 'Vitalicio',
-    price: 124.9,
-    priceLabel: 'R$ 124,90',
-  },
-} as const
-
 type DeviceType = keyof typeof deviceLabels
-type PlanType = keyof typeof plans
-type PaymentProvider = 'perfect-pay' | 'kiwify'
+type PlanType = 'daily' | 'weekly' | 'monthly' | 'lifetime'
+type PaymentProvider = 'perfect-pay' | 'kiwify' | 'mercado-pago'
 type ClientActivityType =
-  | 'audio_started'
-  | 'audio_half'
-  | 'audio_completed'
   | 'device_selected'
   | 'device_changed'
   | 'plan_selected'
   | 'payment_opened'
   | 'button_clicked'
-  | 'message_sent'
 
 const activityTypes = new Set<ClientActivityType>([
-  'audio_started',
-  'audio_half',
-  'audio_completed',
   'device_selected',
   'device_changed',
   'plan_selected',
   'payment_opened',
   'button_clicked',
-  'message_sent',
 ])
 
 function isDevice(value: string): value is DeviceType {
@@ -60,13 +36,14 @@ function isDevice(value: string): value is DeviceType {
 }
 
 function isPlan(value: string): value is PlanType {
-  return value === 'weekly' || value === 'monthly' || value === 'lifetime'
+  return isPlanType(value)
 }
 
 function inferPaymentProvider(link: string, explicit?: string): PaymentProvider {
-  if (explicit === 'kiwify' || explicit === 'perfect-pay') return explicit
+  if (explicit === 'kiwify' || explicit === 'perfect-pay' || explicit === 'mercado-pago') return explicit
   const normalizedLink = link.toLowerCase()
   if (normalizedLink.includes('kiwify')) return 'kiwify'
+  if (normalizedLink.includes('mercadopago') || normalizedLink.includes('mercado-pago')) return 'mercado-pago'
   return 'perfect-pay'
 }
 
@@ -155,11 +132,6 @@ export async function POST(request: NextRequest) {
       paymentLink?: string
       paymentLabel?: string
       paymentProvider?: string
-      buttonAction?: string
-      messageId?: string
-      buttonKey?: string
-      buttonLabel?: string
-      introStep?: string
       activityAction?: string
       activityType?: string
       activityLabel?: string
@@ -177,8 +149,6 @@ export async function POST(request: NextRequest) {
     const plan = String(body.plan || '')
 
     const isPaymentAction = body.paymentAction === 'opened_payment'
-    const isButtonAction = body.buttonAction === 'client_button_click'
-    const isIntroStep = body.introStep === 'features' || body.introStep === 'question'
     const isActivityAction =
       body.activityAction === 'client_activity' && isActivityType(String(body.activityType || ''))
 
@@ -189,8 +159,6 @@ export async function POST(request: NextRequest) {
         !isDevice(device) &&
         !isPlan(plan) &&
         !isPaymentAction &&
-        !isButtonAction &&
-        !isIntroStep &&
         !isActivityAction
       )
     ) {
@@ -199,6 +167,7 @@ export async function POST(request: NextRequest) {
 
     const adminAuth = getAdminAuth()
     const adminDb = getAdminDb()
+    const planCatalog = await loadServerPlanCatalog(adminDb)
     const decodedToken = await adminAuth.verifyIdToken(body.idToken)
     const uid = decodedToken.uid
     const chatRef = adminDb.collection('chats').doc(chatId)
@@ -242,7 +211,7 @@ export async function POST(request: NextRequest) {
       const previousLabel = isDevice(previousDevice) ? deviceLabels[previousDevice] : ''
       if (previousLabel && previousDevice !== device) {
         return NextResponse.json(
-          { error: 'Dispositivo ja definido. Para alterar, fale com o atendimento.' },
+          { error: `Este numero ja pertence ao dispositivo ${previousLabel} e nao da para alterar. Se quiser alterar, use outro numero.` },
           { status: 409 },
         )
       }
@@ -279,9 +248,12 @@ export async function POST(request: NextRequest) {
     }
 
     if (isPlan(plan)) {
+      const planCatalogItem = planCatalog[plan]
       const selectedPlan = {
         plan,
-        ...plans[plan],
+        label: planCatalogItem.label,
+        price: planCatalogItem.price,
+        priceLabel: planCatalogItem.priceLabel,
       }
       accountUpdate.purchaseIntent = selectedPlan
       chatUpdate.selectedPlan = selectedPlan
@@ -343,45 +315,6 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    if (isButtonAction) {
-      const messageId = String(body.messageId || '').trim()
-      const buttonKey = String(body.buttonKey || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
-      const buttonLabel = String(body.buttonLabel || 'Botao').trim().slice(0, 80)
-      const buttonPlan = buttonKey.startsWith('buy_') ? buttonKey.replace('buy_', '') : ''
-      const clickedPlan = isPlan(buttonPlan) ? plans[buttonPlan] : null
-
-      if (!messageId || !buttonKey) {
-        return NextResponse.json({ error: 'Clique invalido.' }, { status: 400 })
-      }
-
-      await chatRef.collection('messages').doc(messageId).set(
-        {
-          buttonClicks: {
-            [buttonKey]: {
-              label: clickedPlan ? `Plano ${clickedPlan.label}` : buttonLabel,
-              count: FieldValue.increment(1),
-              lastAt: FieldValue.serverTimestamp(),
-            },
-          },
-        },
-        { merge: true },
-      )
-
-      await logClientActivity({
-        chatRef,
-        chatUpdate,
-        type: 'button_clicked',
-        key: `button_${messageId}_${buttonKey}`,
-        label: clickedPlan ? `Clicou no plano ${clickedPlan.label}` : `Clicou em ${buttonLabel}`,
-        meta: {
-          messageId,
-          buttonKey,
-          buttonLabel: clickedPlan ? `Plano ${clickedPlan.label}` : buttonLabel,
-          ...(clickedPlan ? { plan: buttonPlan, planLabel: clickedPlan.label } : {}),
-        },
-      })
-    }
-
     if (isActivityAction) {
       const activityType = String(body.activityType) as ClientActivityType
       const activityLabel = String(body.activityLabel || 'Acao do cliente').trim()
@@ -397,37 +330,14 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    if (isIntroStep) {
-      const nextStep = String(body.introStep)
-      const onboarding = chat?.onboarding || {}
-
-      if (nextStep === 'features' && !onboarding.featuresSent) {
-        await chatRef.collection('messages').add({
-          sender: 'admin',
-          kind: 'feature_showcase',
-          text:
-            'Principais ferramentas Xit para seu dispositivo — prontas pra usar. Rápido, direto e com pegada hacker.',
-          createdAt: FieldValue.serverTimestamp(),
-        })
-        chatUpdate.onboarding = {
-          ...onboarding,
-          featuresSent: true,
-        }
-      }
-
-      if (nextStep === 'question') {
-        chatUpdate.onboarding = {
-          ...onboarding,
-          questionSent: true,
-        }
-      }
-    }
-
     await adminDb.collection('accounts').doc(accountId).set(accountUpdate, { merge: true })
     await chatRef.set(chatUpdate, { merge: true })
 
     return NextResponse.json({ ok: true })
   } catch (error) {
+    if (isFirebaseAuthTokenError(error)) {
+      return NextResponse.json({ error: 'Sessao invalida.' }, { status: 401 })
+    }
     console.error('Chat profile error:', error)
     return NextResponse.json({ error: 'Nao foi possivel salvar sua escolha.' }, { status: 500 })
   }

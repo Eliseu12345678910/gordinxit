@@ -23,8 +23,16 @@ export const defaultAppUpdateSettings: AppUpdateSettings = {
   changelog: '',
 }
 
-export async function loadAppUpdateSettings() {
-  const response = await fetch('/api/app/update', { cache: 'no-store' })
+export async function loadAppUpdateSettings(options: { chatId?: string; accountId?: string } = {}) {
+  const params = new URLSearchParams()
+  if (options.chatId) params.set('chatId', options.chatId)
+  if (options.accountId) params.set('accountId', options.accountId)
+  const user = auth.currentUser
+  const idToken = user ? await user.getIdToken().catch(() => '') : ''
+  const response = await fetch(`/api/app/update${params.size ? `?${params}` : ''}`, {
+    cache: 'no-store',
+    headers: idToken ? { Authorization: `Bearer ${idToken}` } : undefined,
+  })
   const payload = (await response.json()) as AppUpdateSettings & { error?: string }
 
   if (!response.ok) {

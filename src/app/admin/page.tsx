@@ -19,7 +19,14 @@ import {
   updateChatFunnel,
   updatePaymentProviderSetting,
 } from '@/lib/chat'
-import type { Chat, FunnelStatus, PaymentProvider, PlanType } from '@/types/chat'
+import {
+  defaultPcAccessSettings,
+  loadPcAccessSettings,
+  savePcAccessSettings,
+  type PcAccessDownloadFile,
+  type PcAccessSettings,
+} from '@/lib/pc-access'
+import type { Chat, FunnelStatus, PaymentProvider, PlanType, ResellerAccessType } from '@/types/chat'
 
 type AdminAction =
   | FunnelStatus
@@ -40,6 +47,9 @@ type AppUpdateDraft = {
   message: string
   changelog: string
 }
+
+type AdminView = 'clients' | 'pc'
+type PcResourceKey = 'files' | 'tutorials' | 'fixErrors'
 
 const deviceLabels = {
   android: 'Android',
@@ -77,6 +87,36 @@ function planLabel(plan?: string) {
   return planOptions.find((option) => option.value === plan)?.label || plan
 }
 
+function isPcClient(chat: Chat | null) {
+  return chat?.leadProfile?.device === 'emulator'
+}
+
+function resellerAccessLabel(type?: ResellerAccessType) {
+  if (type === 'internal') return 'Internal'
+  if (type === 'external') return 'External'
+  return ''
+}
+
+function getActiveResellerAccess(chat: Chat | null): ResellerAccessType | undefined {
+  if (!chat?.resellerAccess) return undefined
+  if (chat.resellerAccess.internal?.status === 'active') return 'internal'
+  if (chat.resellerAccess.external?.status === 'active') return 'external'
+  return undefined
+}
+
+function getSelectedResellerAccess(chat: Chat | null): ResellerAccessType | undefined {
+  return chat?.resellerPurchases?.find((purchase) => purchase.accessType)?.accessType || getActiveResellerAccess(chat)
+}
+
+function getPcClientSummary(chat: Chat) {
+  const activeAccess = getActiveResellerAccess(chat)
+  const selectedAccess = getSelectedResellerAccess(chat)
+  const accessText = resellerAccessLabel(activeAccess || selectedAccess) || 'sem tipo'
+  const lastPurchase = chat.resellerPurchases?.find((purchase) => purchase.accessType === (activeAccess || selectedAccess))
+  const planText = planLabel(lastPurchase?.plan || chat.payment?.plan)
+  return `Emulador (PC) | ${accessText}${planText !== 'Sem plano' ? ` | ${planText}` : ''}`
+}
+
 function getActivePlan(chat: Chat | null) {
   if (!chat) return ''
   if (chat.subscription?.status === 'active' && chat.subscription.plan) return chat.subscription.plan
@@ -99,6 +139,13 @@ function getEventCode(chat: Chat | null) {
 function getPlanExpiry(chat: Chat | null) {
   const expiresAt = chat?.subscription?.expiresAt?.toDate?.()
   if (!chat?.subscription?.plan) return 'Sem plano'
+  if (!expiresAt) return 'Permanente'
+  return expiresAt.toLocaleDateString('pt-BR')
+}
+
+function getResellerExpiry(chat: Chat | null, type: ResellerAccessType) {
+  const expiresAt = chat?.resellerAccess?.[type]?.expiresAt?.toDate?.()
+  if (chat?.resellerAccess?.[type]?.status !== 'active') return 'Sem acesso'
   if (!expiresAt) return 'Permanente'
   return expiresAt.toLocaleDateString('pt-BR')
 }
@@ -217,7 +264,9 @@ function ClientList({
             {statusLabel(chat)}
           </span>
           <p>
-            {chat.leadProfile?.deviceLabel || 'Sem dispositivo'} | {planLabel(chat.selectedPlan?.plan || getActivePlan(chat))}
+            {isPcClient(chat)
+              ? getPcClientSummary(chat)
+              : `${chat.leadProfile?.deviceLabel || 'Sem dispositivo'} | ${planLabel(chat.selectedPlan?.plan || getActivePlan(chat))}`}
           </p>
         </button>
       ))}
@@ -410,6 +459,286 @@ function AppDownloadSettingsPanel() {
   )
 }
 
+const pcResourceLabels: Record<PcResourceKey, { title: string; label: string; url: string; add: string }> = {
+  files: {
+    title: 'Arquivos de download',
+    label: 'Nome do arquivo',
+    url: 'Link do arquivo',
+    add: 'Adicionar arquivo',
+  },
+  tutorials: {
+    title: 'Tutoriais',
+    label: 'Nome do tutorial',
+    url: 'Link do tutorial',
+    add: 'Adicionar tutorial',
+  },
+  fixErrors: {
+    title: 'Fix errors',
+    label: 'Erro ou solucao',
+    url: 'Link do fix',
+    add: 'Adicionar fix',
+  },
+}
+
+function PcResourceEditor({
+  items,
+  resourceKey,
+  accessType,
+  onChange,
+  onAdd,
+  onRemove,
+}: {
+  items: PcAccessDownloadFile[]
+  resourceKey: PcResourceKey
+  accessType: keyof PcAccessSettings
+  onChange: (type: keyof PcAccessSettings, key: PcResourceKey, index: number, field: keyof PcAccessDownloadFile, value: string) => void
+  onAdd: (type: keyof PcAccessSettings, key: PcResourceKey) => void
+  onRemove: (type: keyof PcAccessSettings, key: PcResourceKey, index: number) => void
+}) {
+  const labels = pcResourceLabels[resourceKey]
+
+  return (
+    <section className="new-admin-pc-resource">
+      <header>
+        <strong>{labels.title}</strong>
+        <button type="button" onClick={() => onAdd(accessType, resourceKey)}>{labels.add}</button>
+      </header>
+
+      {items.length === 0 ? (
+        <p>Nenhum item cadastrado.</p>
+      ) : (
+        <div className="new-admin-pc-resource-list">
+          {items.map((item, index) => (
+            <article key={`${resourceKey}-${index}`}>
+              <label>
+                <small>{labels.label}</small>
+                <input
+                  value={item.label}
+                  onChange={(event) => onChange(accessType, resourceKey, index, 'label', event.target.value)}
+                  placeholder={labels.label}
+                />
+              </label>
+              <label>
+                <small>{labels.url}</small>
+                <input
+                  value={item.url}
+                  onChange={(event) => onChange(accessType, resourceKey, index, 'url', event.target.value)}
+                  placeholder="https://..."
+                />
+              </label>
+              <button type="button" className="danger" onClick={() => onRemove(accessType, resourceKey, index)}>
+                Remover
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PcAccessSettingsPanel() {
+  const [settings, setSettings] = useState<PcAccessSettings>(defaultPcAccessSettings)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('Carregando downloads PC...')
+
+  useEffect(() => {
+    let active = true
+
+    loadPcAccessSettings()
+      .then((nextSettings) => {
+        if (!active) return
+        setSettings(nextSettings)
+        setStatus('Downloads PC carregados.')
+      })
+      .catch((error) => {
+        if (active) setStatus(error instanceof Error ? error.message : 'Nao foi possivel carregar downloads PC.')
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  function updateDownload(type: keyof PcAccessSettings, key: keyof PcAccessSettings['internal'], value: string | boolean) {
+    setSettings((current) => ({
+      ...current,
+      [type]: {
+        ...current[type],
+        [key]: value,
+      },
+    }))
+  }
+
+  function updateResourceItem(
+    type: keyof PcAccessSettings,
+    key: PcResourceKey,
+    index: number,
+    field: keyof PcAccessDownloadFile,
+    value: string,
+  ) {
+    setSettings((current) => ({
+      ...current,
+      [type]: {
+        ...current[type],
+        [key]: current[type][key].map((item, itemIndex) => (
+          itemIndex === index ? { ...item, [field]: value } : item
+        )),
+      },
+    }))
+  }
+
+  function addResourceItem(type: keyof PcAccessSettings, key: PcResourceKey) {
+    setSettings((current) => ({
+      ...current,
+      [type]: {
+        ...current[type],
+        [key]: [...current[type][key], { label: '', url: '' }],
+      },
+    }))
+  }
+
+  function removeResourceItem(type: keyof PcAccessSettings, key: PcResourceKey, index: number) {
+    setSettings((current) => {
+      const nextItems = current[type][key].filter((_, itemIndex) => itemIndex !== index)
+      return {
+        ...current,
+        [type]: {
+          ...current[type],
+          [key]: nextItems,
+          ...(key === 'files' && current[type].downloadUrl === current[type][key][index]?.url
+            ? { downloadUrl: nextItems[0]?.url || '' }
+            : {}),
+        },
+      }
+    })
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+
+    setBusy(true)
+    setStatus('Salvando downloads PC...')
+
+    try {
+      const saved = await savePcAccessSettings(settings)
+      setSettings(saved)
+      setStatus('Downloads PC salvos.')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Nao foi possivel salvar downloads PC.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="new-admin-pc-page">
+      <header className="new-admin-pc-page-head">
+        <div>
+          <span>Central PC</span>
+          <h2>Downloads, tutoriais e fix errors</h2>
+          <p>Configure separadamente o que aparece para clientes com acesso Internal ou External.</p>
+        </div>
+        <button type="submit" form="pc-access-settings-form" disabled={busy}>{busy ? 'Salvando...' : 'Salvar Central PC'}</button>
+      </header>
+
+      <form id="pc-access-settings-form" className="new-admin-download-form new-admin-pc-form" onSubmit={handleSubmit}>
+        {(['internal', 'external'] as const).map((type) => (
+          <section className="new-admin-pc-column" key={type}>
+            <header>
+              <div>
+                <span>{type === 'internal' ? 'Plano Internal' : 'Plano External'}</span>
+                <strong>{settings[type].title || (type === 'internal' ? 'Internal' : 'External')}</strong>
+              </div>
+              <label className="new-admin-download-check">
+                <input
+                  type="checkbox"
+                  checked={settings[type].enabled}
+                  onChange={(event) => updateDownload(type, 'enabled', event.target.checked)}
+                />
+                <span>Liberado</span>
+              </label>
+            </header>
+
+            <div className="new-admin-download-grid">
+              <label>
+                <small>Nome exibido</small>
+                <input
+                  value={settings[type].title}
+                  onChange={(event) => updateDownload(type, 'title', event.target.value)}
+                  placeholder={type === 'internal' ? 'Internal' : 'External'}
+                />
+              </label>
+              <label>
+                <small>Versao / destaque</small>
+                <input
+                  value={settings[type].versionName}
+                  onChange={(event) => updateDownload(type, 'versionName', event.target.value)}
+                  placeholder="1.0"
+                />
+              </label>
+            </div>
+
+            <label>
+              <small>Link principal de download</small>
+              <input
+                value={settings[type].downloadUrl}
+                onChange={(event) => updateDownload(type, 'downloadUrl', event.target.value)}
+                placeholder="https://..."
+              />
+            </label>
+
+            <PcResourceEditor
+              accessType={type}
+              resourceKey="files"
+              items={settings[type].files || []}
+              onChange={updateResourceItem}
+              onAdd={addResourceItem}
+              onRemove={removeResourceItem}
+            />
+            <PcResourceEditor
+              accessType={type}
+              resourceKey="tutorials"
+              items={settings[type].tutorials || []}
+              onChange={updateResourceItem}
+              onAdd={addResourceItem}
+              onRemove={removeResourceItem}
+            />
+            <PcResourceEditor
+              accessType={type}
+              resourceKey="fixErrors"
+              items={settings[type].fixErrors || []}
+              onChange={updateResourceItem}
+              onAdd={addResourceItem}
+              onRemove={removeResourceItem}
+            />
+
+            <label>
+              <small>Link do tutorial principal em video</small>
+              <input
+                value={settings[type].tutorialUrl}
+                onChange={(event) => updateDownload(type, 'tutorialUrl', event.target.value)}
+                placeholder="https://..."
+              />
+            </label>
+            <label>
+              <small>Observacao para o cliente</small>
+              <textarea
+                value={settings[type].notes}
+                onChange={(event) => updateDownload(type, 'notes', event.target.value)}
+                placeholder="Mensagem opcional para aparecer em acesso-pc"
+              />
+            </label>
+          </section>
+        ))}
+
+        {status && <small className="new-admin-download-status">{status}</small>}
+      </form>
+    </section>
+  )
+}
+
 function ActionButton({
   children,
   busy,
@@ -488,12 +817,18 @@ function DetailPanel({
   const availablePlanActions = planOptions.filter((plan) => plan.value !== activePlan)
   const selectedPlanAction = selectedPlan && selectedPlan !== activePlan ? selectedPlan : ''
   const needsPaymentConfirm = chat.payment?.status !== 'paid'
+  const pcClient = isPcClient(chat)
+  const selectedResellerAccess = getSelectedResellerAccess(chat)
+  const activeResellerAccess = getActiveResellerAccess(chat)
+  const resellerPurchase = chat.resellerPurchases?.find((purchase) => (
+    purchase.accessType === (activeResellerAccess || selectedResellerAccess)
+  ))
 
   return (
-    <section className="new-admin-detail">
+    <section className={`new-admin-detail ${pcClient ? 'pc-client' : ''}`}>
       <header>
         <div>
-          <span>Cliente</span>
+          <span>{pcClient ? 'Cliente emulador / PC' : 'Cliente'}</span>
           <h2>{formatPhone(chat.accessUsername || chat.usernameKey)}</h2>
           <p>{chat.id}</p>
         </div>
@@ -512,31 +847,65 @@ function DetailPanel({
         <article>
           <span>Dispositivo</span>
           <strong>
-            {chat.leadProfile?.device
-              ? deviceLabels[chat.leadProfile.device]
+            {pcClient
+              ? 'Emulador (PC)'
+              : chat.leadProfile?.device
+                ? deviceLabels[chat.leadProfile.device]
               : chat.leadProfile?.deviceLabel || 'Nao escolhido'}
           </strong>
         </article>
-        <article>
-          <span>Plano escolhido</span>
-          <strong>{planLabel(chat.selectedPlan?.plan)}</strong>
-        </article>
-        <article>
-          <span>Plano ativo</span>
-          <strong>{activePlan ? planLabel(activePlan) : 'Nenhum'}</strong>
-        </article>
-        <article>
-          <span>Plugin</span>
-          <strong>{pluginActive ? 'Ativo' : chat.plugin?.included === false ? 'Nao incluso' : 'Incluso/Pendente'}</strong>
-        </article>
+        {pcClient ? (
+          <>
+            <article>
+              <span>Acesso PC escolhido</span>
+              <strong>{resellerAccessLabel(selectedResellerAccess) || 'Nao escolhido'}</strong>
+            </article>
+            <article>
+              <span>Acesso PC ativo</span>
+              <strong>{resellerAccessLabel(activeResellerAccess) || 'Nenhum'}</strong>
+            </article>
+            <article>
+              <span>Plano PC</span>
+              <strong>{planLabel(resellerPurchase?.plan || chat.payment?.plan)}</strong>
+            </article>
+          </>
+        ) : (
+          <>
+            <article>
+              <span>Plano escolhido</span>
+              <strong>{planLabel(chat.selectedPlan?.plan)}</strong>
+            </article>
+            <article>
+              <span>Plano ativo</span>
+              <strong>{activePlan ? planLabel(activePlan) : 'Nenhum'}</strong>
+            </article>
+            <article>
+              <span>Plugin</span>
+              <strong>{pluginActive ? 'Ativo' : chat.plugin?.included === false ? 'Nao incluso' : 'Incluso/Pendente'}</strong>
+            </article>
+          </>
+        )}
         <article>
           <span>Pagamento</span>
           <strong>{paymentStatusLabel(chat.payment?.status)}</strong>
         </article>
-        <article>
-          <span>Expira em</span>
-          <strong>{getPlanExpiry(chat)}</strong>
-        </article>
+        {pcClient ? (
+          <>
+            <article>
+              <span>Internal expira</span>
+              <strong>{getResellerExpiry(chat, 'internal')}</strong>
+            </article>
+            <article>
+              <span>External expira</span>
+              <strong>{getResellerExpiry(chat, 'external')}</strong>
+            </article>
+          </>
+        ) : (
+          <article>
+            <span>Expira em</span>
+            <strong>{getPlanExpiry(chat)}</strong>
+          </article>
+        )}
         <article className="wide">
           <span>Codigo pesquisavel</span>
           <strong>{paymentCode}</strong>
@@ -572,13 +941,13 @@ function DetailPanel({
             </ActionButton>
           )}
 
-          {selectedPlanAction && (
+          {!pcClient && selectedPlanAction && (
             <ActionButton busy={busy} onClick={() => onAction('activated', selectedPlanAction)}>
               Ativar {planLabel(selectedPlanAction)}
             </ActionButton>
           )}
 
-          {activePlan && (
+          {!pcClient && activePlan && (
             <ActionButton busy={busy} tone="danger" onClick={() => onAction('deactivate_plan')}>
               Retirar plano ativo
             </ActionButton>
@@ -595,44 +964,53 @@ function DetailPanel({
           )}
         </div>
 
-        <ActionSection
-          title="Planos"
-          description={activePlan ? `Ativo agora: ${planLabel(activePlan)}` : 'Escolha qual acesso liberar'}
-          open={!activePlan}
-        >
-          {availablePlanActions.map((plan) => (
-            <ActionButton
-              key={plan.value}
-              busy={busy}
-              tone={plan.value === selectedPlan ? 'primary' : 'quiet'}
-              onClick={() => onAction('activated', plan.value)}
+        {pcClient ? (
+          <section className="new-admin-pc-notice">
+            <strong>Cliente de Emulador/PC</strong>
+            <p>Este cliente usa a area de revenda PC. Por isso, as acoes de plano Android/iOS e plugin ficam ocultas aqui.</p>
+          </section>
+        ) : (
+          <>
+            <ActionSection
+              title="Planos"
+              description={activePlan ? `Ativo agora: ${planLabel(activePlan)}` : 'Escolha qual acesso liberar'}
+              open={!activePlan}
             >
-              {activePlan ? `Trocar para ${plan.label}` : `Ativar ${plan.label}`}
-            </ActionButton>
-          ))}
-        </ActionSection>
+              {availablePlanActions.map((plan) => (
+                <ActionButton
+                  key={plan.value}
+                  busy={busy}
+                  tone={plan.value === selectedPlan ? 'primary' : 'quiet'}
+                  onClick={() => onAction('activated', plan.value)}
+                >
+                  {activePlan ? `Trocar para ${plan.label}` : `Ativar ${plan.label}`}
+                </ActionButton>
+              ))}
+            </ActionSection>
 
-        <ActionSection
-          title="Plugin"
-          description={pluginActive ? 'ServiceSync Core ativo' : 'Controle de inclusao e ativacao'}
-        >
-          {chat.plugin?.included !== true && (
-            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_included')}>
-              Marcar plugin incluso
-            </ActionButton>
-          )}
-          {chat.plugin?.included !== false && (
-            <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_not_included')}>
-              Marcar plugin nao incluso
-            </ActionButton>
-          )}
-          {!pluginActive && (
-            <ActionButton busy={busy} onClick={() => onAction('activate_plugin')}>
-              Ativar plugin
-            </ActionButton>
-          )}
-          {pluginActive && <p>Plugin ja ativo nesta conta.</p>}
-        </ActionSection>
+            <ActionSection
+              title="Plugin"
+              description={pluginActive ? 'ServiceSync Core ativo' : 'Controle de inclusao e ativacao'}
+            >
+              {chat.plugin?.included !== true && (
+                <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_included')}>
+                  Marcar plugin incluso
+                </ActionButton>
+              )}
+              {chat.plugin?.included !== false && (
+                <ActionButton busy={busy} tone="quiet" onClick={() => onAction('set_plugin_not_included')}>
+                  Marcar plugin nao incluso
+                </ActionButton>
+              )}
+              {!pluginActive && (
+                <ActionButton busy={busy} onClick={() => onAction('activate_plugin')}>
+                  Ativar plugin
+                </ActionButton>
+              )}
+              {pluginActive && <p>Plugin ja ativo nesta conta.</p>}
+            </ActionSection>
+          </>
+        )}
 
         <ActionSection
           title="Conta"
@@ -663,6 +1041,11 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false)
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('perfect-pay')
   const [providerBusy, setProviderBusy] = useState(false)
+  const [view, setView] = useState<AdminView>('clients')
+
+  useEffect(() => {
+    if (window.location.hash === '#central-pc') setView('pc')
+  }, [])
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
@@ -706,6 +1089,11 @@ export default function AdminPage() {
     setIsLoggedIn(false)
     setSelectedChat(null)
     setChats([])
+  }
+
+  function handleViewChange(nextView: AdminView) {
+    setView(nextView)
+    window.history.replaceState(null, '', nextView === 'pc' ? '#central-pc' : window.location.pathname)
   }
 
   async function handleProviderChange(nextProvider: PaymentProvider) {
@@ -783,6 +1171,25 @@ export default function AdminPage() {
           </div>
         </section>
 
+        <section className="new-admin-nav">
+          <button
+            type="button"
+            className={view === 'clients' ? 'active' : ''}
+            onClick={() => handleViewChange('clients')}
+          >
+            <span>Clientes</span>
+            <strong>Compras e acessos</strong>
+          </button>
+          <button
+            type="button"
+            className={view === 'pc' ? 'active' : ''}
+            onClick={() => handleViewChange('pc')}
+          >
+            <span>Central PC</span>
+            <strong>Downloads e tutoriais</strong>
+          </button>
+        </section>
+
         <AppDownloadSettingsPanel />
 
         <label className="new-admin-search">
@@ -797,7 +1204,11 @@ export default function AdminPage() {
         <ClientList chats={filteredChats} selectedId={selectedChat?.id} onSelect={setSelectedChat} />
       </aside>
 
-      <DetailPanel chat={selectedChat} busy={busy} actionStatus={status} onAction={handleAction} />
+      {view === 'pc' ? (
+        <PcAccessSettingsPanel />
+      ) : (
+        <DetailPanel chat={selectedChat} busy={busy} actionStatus={status} onAction={handleAction} />
+      )}
       <AdminStyles />
     </main>
   )
@@ -877,7 +1288,9 @@ function AdminStyles() {
       .new-admin-login-card button,
       .new-admin-title button,
       .new-admin-provider button,
-      .new-admin-actions button {
+      .new-admin-nav button,
+      .new-admin-actions button,
+      .new-admin-pc-page button {
         min-height: 40px;
         border-radius: 8px;
         background: #0f172a;
@@ -897,14 +1310,17 @@ function AdminStyles() {
       }
 
       .new-admin-page {
+        height: 100vh;
         display: grid;
-        grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+        grid-template-columns: minmax(260px, 34vw) minmax(0, 1fr);
         gap: 14px;
         padding: 14px;
+        overflow: hidden;
       }
 
       .new-admin-sidebar,
-      .new-admin-detail {
+      .new-admin-detail,
+      .new-admin-pc-page {
         border: 1px solid #dbe3ee;
         border-radius: 8px;
         background: #ffffff;
@@ -912,11 +1328,13 @@ function AdminStyles() {
       }
 
       .new-admin-sidebar {
-        min-height: calc(100vh - 28px);
+        height: calc(100vh - 28px);
+        min-height: 0;
         display: grid;
-        grid-template-rows: auto auto auto auto auto 1fr;
+        grid-template-rows: auto auto auto auto auto auto 1fr;
         gap: 12px;
         padding: 12px;
+        overflow: hidden;
       }
 
       .new-admin-title {
@@ -979,6 +1397,31 @@ function AdminStyles() {
       .new-admin-provider button.active {
         background: #0f172a;
         color: #ffffff;
+      }
+
+      .new-admin-nav {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .new-admin-nav button {
+        display: grid;
+        gap: 3px;
+        border: 1px solid #dbe3ee;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 10px;
+        text-align: left;
+      }
+
+      .new-admin-nav button.active {
+        border-color: #0ea5e9;
+        background: #e0f2fe;
+      }
+
+      .new-admin-nav strong {
+        font-size: 13px;
       }
 
       .new-admin-download {
@@ -1085,6 +1528,145 @@ function AdminStyles() {
         font-weight: 900;
       }
 
+      .new-admin-download-check {
+        display: flex !important;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 8px;
+      }
+
+      .new-admin-download-check input {
+        width: auto;
+      }
+
+      .new-admin-pc-page {
+        min-height: calc(100vh - 28px);
+        display: grid;
+        align-content: start;
+        gap: 14px;
+        padding: 16px;
+      }
+
+      .new-admin-pc-page-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+        border-bottom: 1px solid #e2e8f0;
+        padding-bottom: 14px;
+      }
+
+      .new-admin-pc-page-head span,
+      .new-admin-pc-column > header span,
+      .new-admin-nav span {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 950;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .new-admin-pc-page-head h2 {
+        margin: 4px 0 0;
+        color: #0f172a;
+        font-size: clamp(30px, 4vw, 48px);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .new-admin-pc-page-head p,
+      .new-admin-pc-resource p {
+        margin: 8px 0 0;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .new-admin-pc-page-head button {
+        min-width: 170px;
+      }
+
+      .new-admin-pc-form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+      }
+
+      .new-admin-pc-form > .new-admin-download-status {
+        grid-column: 1 / -1;
+      }
+
+      .new-admin-pc-column {
+        display: grid;
+        gap: 12px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 12px;
+      }
+
+      .new-admin-pc-column > header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .new-admin-pc-column > header strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 20px;
+      }
+
+      .new-admin-pc-resource {
+        display: grid;
+        gap: 8px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 10px;
+      }
+
+      .new-admin-pc-resource header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .new-admin-pc-resource header button {
+        min-height: 34px;
+        background: #e0f2fe;
+        color: #075985;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .new-admin-pc-resource-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .new-admin-pc-resource-list article {
+        display: grid;
+        grid-template-columns: minmax(130px, 0.8fr) minmax(180px, 1.2fr) auto;
+        gap: 8px;
+        align-items: end;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 8px;
+      }
+
+      .new-admin-pc-resource-list button.danger {
+        background: #fff7f7;
+        color: #b91c1c;
+        border: 1px solid #fecaca;
+        padding: 0 10px;
+      }
+
       .new-admin-search {
         display: grid;
         gap: 6px;
@@ -1162,7 +1744,9 @@ function AdminStyles() {
       }
 
       .new-admin-detail {
-        min-height: calc(100vh - 28px);
+        height: calc(100vh - 28px);
+        min-height: 0;
+        overflow: auto;
         display: grid;
         align-content: start;
         gap: 14px;
@@ -1320,13 +1904,32 @@ function AdminStyles() {
         opacity: 0.65;
       }
 
-      @media (max-width: 980px) {
+      .new-admin-pc-notice {
+        display: grid;
+        gap: 4px;
+        border: 1px solid #bae6fd;
+        border-radius: 8px;
+        background: #f0f9ff;
+        color: #075985;
+        padding: 12px;
+      }
+
+      .new-admin-pc-notice p {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      @media (max-width: 420px) {
         .new-admin-page {
+          height: auto;
           grid-template-columns: 1fr;
+          overflow: visible;
         }
 
         .new-admin-sidebar,
-        .new-admin-detail {
+        .new-admin-detail,
+        .new-admin-pc-page {
           min-height: auto;
         }
 
@@ -1339,8 +1942,14 @@ function AdminStyles() {
         }
 
         .new-admin-quick-actions,
-        .new-admin-action-section > div {
+        .new-admin-action-section > div,
+        .new-admin-pc-form,
+        .new-admin-pc-resource-list article {
           grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .new-admin-pc-resource-list article button {
+          grid-column: 1 / -1;
         }
       }
 
@@ -1351,7 +1960,8 @@ function AdminStyles() {
         }
 
         .new-admin-sidebar,
-        .new-admin-detail {
+        .new-admin-detail,
+        .new-admin-pc-page {
           border-radius: 8px;
           padding: 10px;
         }
@@ -1406,8 +2016,20 @@ function AdminStyles() {
         }
 
         .new-admin-quick-actions,
-        .new-admin-action-section > div {
+        .new-admin-action-section > div,
+        .new-admin-pc-form,
+        .new-admin-pc-resource-list article {
           grid-template-columns: 1fr;
+        }
+
+        .new-admin-pc-page-head,
+        .new-admin-pc-column > header,
+        .new-admin-pc-resource header {
+          display: grid;
+        }
+
+        .new-admin-pc-page-head button {
+          width: 100%;
         }
 
         .new-admin-action-section summary {

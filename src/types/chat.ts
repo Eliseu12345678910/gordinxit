@@ -1,11 +1,22 @@
 import type { Timestamp } from 'firebase/firestore'
 
 export type ChatStatus = 'automation' | 'open'
-export type MessageSender = 'client' | 'admin' | 'bot'
 export type DeviceType = 'android' | 'ios' | 'emulator'
-export type PlanType = 'weekly' | 'monthly' | 'lifetime'
+export type PlanType = 'daily' | 'weekly' | 'monthly' | 'lifetime'
 export type PaymentTarget = PlanType | 'plugin'
-export type PaymentProvider = 'perfect-pay' | 'kiwify'
+export type PaymentProvider = 'perfect-pay' | 'kiwify' | 'mercado-pago'
+export type ResellerAccessType = 'internal' | 'external'
+export type ResellerPurchase = {
+  id?: string
+  status?: 'pending' | 'paid' | 'rejected' | 'cancelled' | 'refunded'
+  plan?: PlanType
+  accessType?: ResellerAccessType
+  priceLabel?: string
+  paymentCode?: string
+  platformCode?: string
+  activatedAt?: Timestamp
+  expiresAt?: Timestamp | null
+}
 export type FunnelStatus =
   | 'new'
   | 'device_selected'
@@ -23,15 +34,11 @@ export type AutomationAnswer = {
 }
 
 export type ClientActivityType =
-  | 'audio_started'
-  | 'audio_half'
-  | 'audio_completed'
   | 'device_selected'
   | 'device_changed'
   | 'plan_selected'
   | 'payment_opened'
   | 'button_clicked'
-  | 'message_sent'
 
 export type ClientActivitySummary = {
   type: ClientActivityType
@@ -49,10 +56,7 @@ export type ClientActivity = {
   createdAt?: Timestamp
 }
 
-export type IntroAudioKey = 'start' | 'start-live'
-
 export type AdminSettings = {
-  liveIntroEnabled?: boolean
   paymentProvider?: PaymentProvider
   updatedAt?: Timestamp
 }
@@ -69,12 +73,11 @@ export type Chat = {
   automationComplete: boolean
   answers?: AutomationAnswer[]
   lastMessage?: string
-  lastSender?: MessageSender
+  lastSender?: 'client' | 'admin' | 'bot'
   lastMessageAt?: Timestamp
   createdAt?: Timestamp
   updatedAt?: Timestamp
   source?: string
-  introAudioKey?: IntroAudioKey
   funnelStatus?: FunnelStatus
   leadProfile?: {
     device?: DeviceType
@@ -93,9 +96,17 @@ export type Chat = {
     activatedAt?: Timestamp
     expiresAt?: Timestamp | null
   }
+  resellerAccess?: Partial<Record<ResellerAccessType, {
+    status?: 'inactive' | 'active'
+    plan?: PlanType
+    activatedAt?: Timestamp
+    expiresAt?: Timestamp | null
+    paymentCode?: string
+  }>>
+  resellerPurchases?: ResellerPurchase[]
   payment?: {
     provider?: PaymentProvider | string
-    status?: 'link_sent' | 'opened' | 'paid' | 'rejected' | 'cancelled' | 'refunded'
+    status?: 'pending' | 'link_sent' | 'opened' | 'paid' | 'rejected' | 'cancelled' | 'refunded'
     link?: string
     plan?: PaymentTarget
     label?: string
@@ -128,63 +139,4 @@ export type Chat = {
   }
   activitySummary?: Record<string, ClientActivitySummary>
   lastClientActivity?: ClientActivitySummary
-}
-
-export type AudioKey =
-  | 'start'
-  | 'start-live'
-  | 'second-android'
-  | 'second-ios'
-  | 'second-emulator'
-  | 'latest-android'
-  | 'latest-ios'
-  | 'latest-emulator'
-  | 'penultimate'
-
-export type ChatMessage = {
-  id: string
-  text: string
-  sender: MessageSender
-  kind?:
-    | 'text'
-    | 'plan_options'
-    | 'payment_link'
-    | 'device_intro'
-    | 'device_selector'
-    | 'feature_showcase'
-    | 'demo_video'
-    | 'recording_indicator'
-    | 'plugin_payment_link'
-    | 'plugin_diagnostic'
-    | 'app_download_link'
-  audioKey?: AudioKey
-  videoUrl?: string
-  paymentLink?: string
-  paymentLabel?: string
-  paymentPlan?: PaymentTarget
-  downloadLink?: string
-  downloadLabel?: string
-  appVersionName?: string
-  appName?: string
-  editedAt?: Timestamp
-  editedBy?: string
-  buttonClicks?: Record<
-    string,
-    {
-      label?: string
-      count?: number
-      lastAt?: Timestamp
-    }
-  >
-  createdAt?: Timestamp
-}
-
-export type InitialQuestion = {
-  id: string
-  text: string
-  type: 'accountStatus' | 'credentials' | 'yesno'
-  answer?: string
-  username?: string
-  password?: string
-  asked?: boolean
 }

@@ -1,8 +1,8 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
-import { FieldValue, type Firestore } from 'firebase-admin/firestore'
+import { FieldValue } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
+import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
 import { isPhoneInput, normalizeBrazilPhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
@@ -20,8 +20,12 @@ const validBrazilDdds = new Set([
   '91', '92', '93', '94', '95', '96', '97', '98', '99',
 ])
 const deviceValues = new Set(['android', 'ios', 'emulator'])
-const planValues = new Set(['weekly', 'monthly', 'lifetime'])
-type IntroAudioKey = 'start' | 'start-live'
+const planValues = new Set(['daily', 'weekly', 'monthly', 'lifetime'])
+const deviceLabels: Record<string, string> = {
+  android: 'Android',
+  ios: 'iOS',
+  emulator: 'Emulador (PC)',
+}
 
 function normalizeUsername(username: string) {
   const clean = username.trim().toLowerCase()
@@ -68,6 +72,21 @@ function verifyPassword(password: string, salt: string, hash: string) {
   return candidate.length === stored.length && timingSafeEqual(candidate, stored)
 }
 
+function hasPasswordCredentials(record: unknown) {
+  if (!record || typeof record !== 'object') return false
+  const data = record as Record<string, unknown>
+  return typeof data.passwordSalt === 'string' && Boolean(data.passwordSalt)
+    && typeof data.passwordHash === 'string' && Boolean(data.passwordHash)
+}
+
+function passwordMatches(record: unknown, password: string) {
+  if (!record || typeof record !== 'object') return false
+  const data = record as Record<string, unknown>
+  const passwordSalt = typeof data.passwordSalt === 'string' ? data.passwordSalt : ''
+  const passwordHash = typeof data.passwordHash === 'string' ? data.passwordHash : ''
+  return Boolean(password && passwordSalt && passwordHash && verifyPassword(password, passwordSalt, passwordHash))
+}
+
 function readRecordValue(record: unknown, key: string) {
   if (!record || typeof record !== 'object') return ''
   const value = (record as Record<string, unknown>)[key]
@@ -97,15 +116,28 @@ function getAccessProfile(account: unknown, chat: unknown) {
   }
 }
 
-function getSavedIntroAudioKey(account: unknown, chat: unknown): IntroAudioKey {
-  const chatIntro = readRecordValue(chat, 'introAudioKey')
-  const accountIntro = readRecordValue(account, 'introAudioKey')
-  return chatIntro === 'start-live' || accountIntro === 'start-live' ? 'start-live' : 'start'
+function getStoredDevice(account: unknown, chat: unknown) {
+  const profile = getAccessProfile(account, chat)
+  return typeof profile.device === 'string' && deviceValues.has(profile.device) ? profile.device : ''
 }
 
-async function getCurrentIntroAudioKey(adminDb: Firestore): Promise<IntroAudioKey> {
-  const settingsSnapshot = await adminDb.collection('settings').doc('chat-private').get()
-  return settingsSnapshot.data()?.liveIntroEnabled === true ? 'start-live' : 'start'
+function getDeviceMismatchResponse(existingDevice: string, requestedDevice: string) {
+  const existingLabel = deviceLabels[existingDevice] || existingDevice
+  const requestedLabel = deviceLabels[requestedDevice] || requestedDevice
+
+  if (!existingDevice || !requestedDevice || existingDevice === requestedDevice) return null
+
+  return NextResponse.json(
+    {
+      error: `Este numero ja pertence ao dispositivo ${existingLabel} e nao da para alterar. Se quiser alterar, use outro numero.`,
+      code: 'device_mismatch',
+      existingDevice,
+      existingDeviceLabel: existingLabel,
+      requestedDevice,
+      requestedDeviceLabel: requestedLabel,
+    },
+    { status: 409 },
+  )
 }
 
 export async function POST(request: NextRequest) {
@@ -116,6 +148,7 @@ export async function POST(request: NextRequest) {
       password?: string
       clientId?: string
       requestedChatId?: string
+      device?: string
       mode?: 'login' | 'signup'
     }
 
@@ -130,6 +163,7 @@ export async function POST(request: NextRequest) {
     const username = normalizeUsername(String(body.username || ''))
     const password = String(body.password || '')
     const mode = body.mode === 'signup' ? 'signup' : 'login'
+    const requestedDevice = deviceValues.has(String(body.device || '')) ? String(body.device) : ''
     const usernameError = validateUsername(username)
     const passwordError = password ? validatePassword(password) : ''
 
@@ -151,15 +185,23 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      if (hasPasswordCredentials(account) && !passwordMatches(account, password)) {
+        return NextResponse.json(
+          { error: 'WhatsApp ou senha incorretos.', code: 'invalid_credentials' },
+          { status: 401 },
+        )
+      }
+
       const chatId = String(account?.chatId || body.requestedChatId || adminDb.collection('chats').doc().id)
       const chatRef = adminDb.collection('chats').doc(chatId)
       const chatSnapshot = await chatRef.get()
       const chat = chatSnapshot.data()
-      const introAudioKey = getSavedIntroAudioKey(account, chat)
+      const mismatchResponse = getDeviceMismatchResponse(getStoredDevice(account, chat), requestedDevice)
+
+      if (mismatchResponse) return mismatchResponse
 
       await accountRef.set(
         {
-          introAudioKey,
           lastAccessAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         },
@@ -176,7 +218,6 @@ export async function POST(request: NextRequest) {
           usernameKey,
           status: 'open',
           automationComplete: true,
-          introAudioKey,
           funnelStatus: account?.funnelStatus || 'new',
           lastAccessAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
@@ -190,7 +231,6 @@ export async function POST(request: NextRequest) {
         recovered: true,
         accessUsername: account?.accessUsername || username,
         profile: getAccessProfile(account, chat),
-        introAudioKey,
       })
     }
 
@@ -210,7 +250,16 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const introAudioKey = getSavedIntroAudioKey(chat, chat)
+      if (hasPasswordCredentials(chat) && !passwordMatches(chat, password)) {
+        return NextResponse.json(
+          { error: 'WhatsApp ou senha incorretos.', code: 'invalid_credentials' },
+          { status: 401 },
+        )
+      }
+
+      const mismatchResponse = getDeviceMismatchResponse(getStoredDevice(chat, chat), requestedDevice)
+
+      if (mismatchResponse) return mismatchResponse
 
       await accountRef.set(
         {
@@ -222,7 +271,6 @@ export async function POST(request: NextRequest) {
           ...(chat.passwordHash ? { passwordHash: chat.passwordHash } : {}),
           clientId: body.clientId || chat.clientId || '',
           source: chat.source || 'site',
-          introAudioKey,
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
           lastAccessAt: FieldValue.serverTimestamp(),
@@ -234,7 +282,6 @@ export async function POST(request: NextRequest) {
         {
           accountId: usernameKey,
           participantUids: FieldValue.arrayUnion(uid),
-          introAudioKey,
           lastAccessAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         },
@@ -247,7 +294,6 @@ export async function POST(request: NextRequest) {
         recovered: true,
         accessUsername: chat.accessUsername || username,
         profile: getAccessProfile(chat, chat),
-        introAudioKey,
       })
     }
 
@@ -259,8 +305,6 @@ export async function POST(request: NextRequest) {
           passwordHash: hashPassword(password, passwordSalt),
         }
       : {}
-    const introAudioKey = await getCurrentIntroAudioKey(adminDb)
-
     await accountRef.set(
       {
         chatId,
@@ -270,7 +314,6 @@ export async function POST(request: NextRequest) {
         ...accountCredentials,
         clientId: body.clientId || '',
         source: 'site',
-        introAudioKey,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
         lastAccessAt: FieldValue.serverTimestamp(),
@@ -288,7 +331,6 @@ export async function POST(request: NextRequest) {
         usernameKey,
         status: 'open',
         automationComplete: true,
-        introAudioKey,
         funnelStatus: 'new',
         source: 'whatsapp',
         createdAt: FieldValue.serverTimestamp(),
@@ -304,9 +346,11 @@ export async function POST(request: NextRequest) {
       recovered: false,
       accessUsername: username,
       profile: {},
-      introAudioKey,
     })
   } catch (error) {
+    if (isFirebaseAuthTokenError(error)) {
+      return NextResponse.json({ error: 'Sessao invalida.' }, { status: 401 })
+    }
     console.error('Chat access error:', error)
     return NextResponse.json({ error: 'Nao foi possivel validar o acesso.' }, { status: 500 })
   }

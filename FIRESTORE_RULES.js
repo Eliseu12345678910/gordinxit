@@ -41,31 +41,6 @@ service cloud.firestore {
         && chatNotBlocked(get(chatPath(chatId)).data);
     }
 
-    function validClientChatUpdate(chatId) {
-      let changed = request.resource.data.diff(resource.data).affectedKeys();
-
-      return isParticipant(chatId)
-        && changed.hasOnly([
-          "lastMessage",
-          "lastSender",
-          "lastMessageAt",
-          "updatedAt"
-        ])
-        && request.resource.data.lastSender == "client"
-        && request.resource.data.lastMessage is string
-        && request.resource.data.lastMessage.size() > 0
-        && request.resource.data.lastMessage.size() <= 2000;
-    }
-
-    function validClientMessage(chatId) {
-      return isParticipant(chatId)
-        && request.resource.data.keys().hasOnly(["text", "sender", "createdAt"])
-        && request.resource.data.sender == "client"
-        && request.resource.data.text is string
-        && request.resource.data.text.size() > 0
-        && request.resource.data.text.size() <= 2000;
-    }
-
     match /admins/{adminId} {
       allow get, list: if isAdmin() || (signedIn() && request.auth.uid == adminId);
       allow create, update, delete: if isAdmin();
@@ -89,17 +64,19 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    match /mercadoPagoPayments/{paymentId} {
+      allow read, write: if isAdmin();
+    }
+
     match /chats/{chatId} {
       allow get: if isAdmin() || isParticipant(chatId);
       allow list: if isAdmin();
       allow create: if false;
-      allow update: if isAdmin() || validClientChatUpdate(chatId);
+      allow update: if isAdmin();
       allow delete: if isAdmin();
 
       match /messages/{messageId} {
-        allow get, list: if isAdmin() || isParticipant(chatId);
-        allow create: if isAdmin() || validClientMessage(chatId);
-        allow update, delete: if isAdmin();
+        allow read, write: if false;
       }
 
       match /activity/{activityId} {

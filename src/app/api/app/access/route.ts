@@ -8,6 +8,7 @@ import { isPhoneInput, normalizeBrazilPhone } from '@/lib/phone'
 export const runtime = 'nodejs'
 
 const planLabels = {
+  daily: 'Diario',
   weekly: 'Semanal',
   monthly: 'Mensal',
   lifetime: 'Vitalicio',
@@ -36,8 +37,15 @@ function verifyPassword(password: string, salt: string, hash: string) {
   return candidate.length === stored.length && timingSafeEqual(candidate, stored)
 }
 
+function hasPasswordCredentials(record: unknown) {
+  if (!record || typeof record !== 'object') return false
+  const data = record as Record<string, unknown>
+  return typeof data.passwordSalt === 'string' && Boolean(data.passwordSalt)
+    && typeof data.passwordHash === 'string' && Boolean(data.passwordHash)
+}
+
 function isPlan(value: unknown): value is PlanType {
-  return value === 'weekly' || value === 'monthly' || value === 'lifetime'
+  return value === 'daily' || value === 'weekly' || value === 'monthly' || value === 'lifetime'
 }
 
 function timestampMillis(value: unknown) {
@@ -118,11 +126,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (password) {
+    if (hasPasswordCredentials(account)) {
       const passwordSalt = String(account?.passwordSalt || '')
       const passwordHash = String(account?.passwordHash || '')
 
-      if (passwordSalt && passwordHash && !verifyPassword(password, passwordSalt, passwordHash)) {
+      if (!password || !verifyPassword(password, passwordSalt, passwordHash)) {
         return NextResponse.json(
           {
             allowed: false,

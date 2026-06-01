@@ -2,24 +2,21 @@ import { createHash } from 'crypto'
 import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebase-admin'
+import { isPlanType } from '@/lib/payment-catalog'
+import { loadServerPlanCatalog } from '@/lib/payment-catalog-server'
 
 export const runtime = 'nodejs'
 
-type PlanType = 'weekly' | 'monthly' | 'lifetime'
+type PlanType = 'daily' | 'weekly' | 'monthly' | 'lifetime'
 type PaymentTarget = PlanType | 'plugin'
 type JsonRecord = Record<string, unknown>
 
 const planLabels: Record<PaymentTarget, string> = {
+  daily: 'Diario',
   weekly: 'Semanal',
   monthly: 'Mensal',
   lifetime: 'Vitalicio',
   plugin: 'Plugin ServiceSync Core',
-}
-
-const planDurations: Record<PlanType, number | null> = {
-  weekly: 7,
-  monthly: 30,
-  lifetime: null,
 }
 
 const approvedEventParts = ['compra_aprovada', 'paid', 'approved', 'completed']
@@ -164,6 +161,7 @@ function findPlan(payload: JsonRecord): PaymentTarget | undefined {
 
   if (
     planFromTracking === 'weekly' ||
+    planFromTracking === 'daily' ||
     planFromTracking === 'monthly' ||
     planFromTracking === 'lifetime' ||
     planFromTracking === 'plugin'
@@ -183,6 +181,7 @@ function findPlan(payload: JsonRecord): PaymentTarget | undefined {
   ).toLowerCase()
 
   if (productName.includes('plugin') || productName.includes('servicesync')) return 'plugin'
+  if (productName.includes('diario') || productName.includes('diaria')) return 'daily'
   if (productName.includes('semanal')) return 'weekly'
   if (productName.includes('mensal')) return 'monthly'
   if (productName.includes('permanente') || productName.includes('vital')) return 'lifetime'
@@ -191,11 +190,10 @@ function findPlan(payload: JsonRecord): PaymentTarget | undefined {
 }
 
 function isPlan(value: unknown): value is PlanType {
-  return value === 'weekly' || value === 'monthly' || value === 'lifetime'
+  return isPlanType(value)
 }
 
-function expirationFor(plan: PlanType) {
-  const days = planDurations[plan]
+function expirationFor(days: number | null) {
   if (!days) return null
 
   const expiresAt = new Date()
@@ -324,24 +322,7 @@ function getEventSummary(payload: JsonRecord, chatId: string) {
   }
 }
 
-async function getLiveIntroEnabled(adminDb: ReturnType<typeof getAdminDb>) {
-  const settingsSnapshot = await adminDb.collection('settings').doc('chat-private').get()
-  return settingsSnapshot.data()?.liveIntroEnabled === true
-}
-
-function getPaymentConfirmationMessages(liveIntroEnabled: boolean) {
-  if (liveIntroEnabled) {
-    return [
-      'Pagamento confirmado. O acesso fica registrado na area de planos do site.',
-      'Se precisar de atendimento, chame pelo WhatsApp com o codigo da compra.',
-    ]
-  }
-
-  return [
-    'Pagamento confirmado. O acesso fica registrado na area de planos do site.',
-    'Se precisar de atendimento, chame pelo WhatsApp com o codigo da compra.',
-  ]
-}
+const paymentConfirmationText = 'Pagamento confirmado. O acesso fica registrado na area de planos do site.'
 
 async function readPayload(request: NextRequest) {
   const contentType = request.headers.get('content-type') || ''
@@ -391,6 +372,7 @@ export async function POST(request: NextRequest) {
     }
 
     const adminDb = getAdminDb()
+    const planCatalog = await loadServerPlanCatalog(adminDb)
     const chatId = findChatId(payload)
     const eventId = makeEventId(payload)
     const eventRef = adminDb.collection('kiwifyEvents').doc(eventId)
@@ -467,13 +449,9 @@ export async function POST(request: NextRequest) {
       const alreadyPaid = isPluginPayment
         ? chat.plugin?.included === true && chat.plugin?.status === 'active'
         : chat.payment?.status === 'paid' && chat.payment?.plan !== 'plugin'
-      const liveIntroEnabled = alreadyPaid || isPluginPayment ? false : await getLiveIntroEnabled(adminDb)
-      const confirmationMessages = isPluginPayment
-        ? [
-            'Plugin confirmado, mano. Agora sua conta ficou permanente e o ServiceSync Core esta liberado.',
-            'Pronto, nao precisa pagar mais nada. Seu xit fica com uso vitalicio e atualizacao gratuita pra sempre.',
-          ]
-        : getPaymentConfirmationMessages(liveIntroEnabled)
+      const confirmationText = isPluginPayment
+        ? 'Plugin confirmado. Sua conta ficou permanente e o ServiceSync Core esta liberado.'
+        : paymentConfirmationText
       const existingPlugin = chat.plugin && typeof chat.plugin === 'object' ? chat.plugin : {}
       const pluginAlreadyActive = existingPlugin.included === true && existingPlugin.status === 'active'
       const plugin = {
@@ -489,7 +467,7 @@ export async function POST(request: NextRequest) {
         ? isPluginPayment
           ? 'Plugin ja confirmado pela Kiwify.'
           : 'Pagamento ja confirmado pela Kiwify.'
-        : confirmationMessages.at(-1)
+        : confirmationText
       chatUpdate.lastSender = 'admin'
       chatUpdate.lastMessageAt = FieldValue.serverTimestamp()
       chatUpdate.payment = {
@@ -517,26 +495,12 @@ export async function POST(request: NextRequest) {
           plan,
           status: 'active',
           activatedAt: FieldValue.serverTimestamp(),
-          expiresAt: expirationFor(plan),
+          expiresAt: expirationFor(planCatalog[plan].durationDays),
         }
         chatUpdate.subscription = subscription
         accountUpdate.subscription = subscription
       }
 
-      if (!alreadyPaid) {
-        const messageTimestamp = Date.now()
-
-        await Promise.all(
-          confirmationMessages.map((text, index) =>
-            chatRef.collection('messages').add({
-              sender: 'admin',
-              kind: 'text',
-              text,
-              createdAt: Timestamp.fromMillis(messageTimestamp + index),
-            }),
-          ),
-        )
-      }
     }
 
     if (paymentStatus === 'refunded') {

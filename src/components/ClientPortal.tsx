@@ -1,6 +1,7 @@
 'use client'
 
 import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { isAccountAccessBlocked } from '@/lib/account-block'
 import {
   addPaymentTrackingToLink,
@@ -41,11 +42,28 @@ import {
   loadAppUpdateSettings,
   type AppUpdateSettings,
 } from '@/lib/app-update'
+import {
+  defaultPcAccessSettings,
+  loadPcAccessSettings,
+  type PcAccessSettings,
+} from '@/lib/pc-access'
+import { defaultResellerPlanCatalog, type PublicPlanCatalogItem } from '@/lib/payment-catalog'
 import { formatBrazilPhone, normalizeBrazilPhone } from '@/lib/phone'
-import type { Chat, DeviceType, PaymentProvider, PaymentTarget, PlanType } from '@/types/chat'
+import type { Chat, DeviceType, PaymentProvider, PaymentTarget, PlanType, ResellerAccessType } from '@/types/chat'
 
 type PortalTab = 'plans' | 'plugins'
 type AuthMode = 'login' | 'signup'
+type CheckoutMode = 'external' | 'pix'
+type CheckoutContext = ResellerAccessType
+type PlanOption = typeof planOptions[number]
+type PixCheckoutResult = {
+  paymentId: string
+  status: string
+  priceLabel: string
+  qrCode: string
+  qrCodeBase64?: string
+  ticketUrl?: string
+}
 type PaymentNotice = {
   code: string
   title: string
@@ -96,6 +114,12 @@ const downloadTutorials: Record<DeviceType, string[]> = {
 }
 
 const planVisuals: Record<PlanType, { name: string; tag: string; tone: string; normalPrice: string }> = {
+  daily: {
+    name: 'Diario',
+    tag: '1 dia',
+    tone: 'orange',
+    normalPrice: 'R$ 29,90',
+  },
   weekly: {
     name: 'Semanal',
     tag: '7 dias',
@@ -117,9 +141,21 @@ const planVisuals: Record<PlanType, { name: string; tag: string; tone: string; n
 }
 
 const checkoutPlanPaths: Record<PlanType, string> = {
+  daily: '/paydiaria',
   weekly: '/paysemanal',
   monthly: '/paymensal',
-  lifetime: '/paypermanente',
+  lifetime: '/paylifetime',
+}
+
+const checkoutPlanSlugs: Record<PlanType, string> = {
+  daily: 'diaria',
+  weekly: 'semanal',
+  monthly: 'mensal',
+  lifetime: 'lifetime',
+}
+
+function getPixCheckoutPath(plan: PlanType, context: CheckoutContext) {
+  return `/pay${checkoutPlanSlugs[plan]}-${context}`
 }
 
 const planFeatures = [
@@ -201,6 +237,11 @@ const planPosterSparks = Array.from({ length: 28 }, (_, index) => ({
 }))
 
 const gamePlanVisuals: Record<PlanType, { displayName: string; tag: string; theme: string }> = {
+  daily: {
+    displayName: 'Diario',
+    tag: 'Teste hoje',
+    theme: 'ffp-daily',
+  },
   weekly: {
     displayName: 'Semanal',
     tag: 'Entrada rapida',
@@ -273,6 +314,12 @@ function getPosterPlanDetailItems(
 }
 
 const planDealMap: Record<PlanType, { duration: string; discount: string; note: string; realPrice: string }> = {
+  daily: {
+    duration: '1 dia',
+    discount: 'Teste rapido',
+    note: 'Acesso por dia',
+    realPrice: 'R$ 29,90',
+  },
   weekly: {
     duration: '7 dias',
     discount: 'Sem desconto',
@@ -296,6 +343,10 @@ const planDealMap: Record<PlanType, { duration: string; discount: string; note: 
 type SocialStats = { boughtToday: number; activeUsers: number }
 
 const initialPlanSocialStats: Record<PlanType, SocialStats> = {
+  daily: {
+    boughtToday: 24,
+    activeUsers: 89,
+  },
   weekly: {
     boughtToday: 38,
     activeUsers: 214,
@@ -316,6 +367,7 @@ const initialPluginSocialStats: SocialStats = {
 }
 
 const recentPlanPurchaseProofs: Array<{ name: string; phone: string; plan: PlanType }> = [
+  { name: 'Caio', phone: '13 9***-508*', plan: 'daily' },
   { name: 'Lucas', phone: '66 1***-234*', plan: 'monthly' },
   { name: 'Matheus', phone: '41 9***-812*', plan: 'weekly' },
   { name: 'Rafael', phone: '21 8***-019*', plan: 'monthly' },
@@ -341,6 +393,108 @@ const recentPluginPurchaseProofs: Array<{ name: string; phone: string }> = [
   { name: 'Eduardo', phone: '67 9***-893*' },
 ]
 
+const resellerFeatureSections: Record<CheckoutContext, Array<{ title: string; items: string[] }>> = {
+  external: [
+    {
+      title: 'External',
+      items: [
+        'AIMBOT LEGIT',
+        'AIMBOT - NEW',
+        'AIMBOT - SCOP',
+        'FAST - AWM',
+        'SCOPE - 2X',
+        'CHAMS MENU',
+        'CHAMS VERDE PIER 64',
+        'STREAM MODE',
+        'HIDE IN TASKBAR',
+        'BYPASS SS',
+      ],
+    },
+  ],
+  internal: [
+    {
+      title: 'Funcoes Aimbot',
+      items: [
+        'Aimbot Advanced',
+        'Aimbot Neck',
+        'Aimbot Legit',
+        'Puxar Mira',
+        'Ignorar Knocked',
+        'Ignorar Bots',
+        'Distance Max',
+      ],
+    },
+    {
+      title: 'Config',
+      items: ['Max Distance', 'Visible Check', 'Filled Color', 'Show Fov', 'Fov Color'],
+    },
+    {
+      title: 'Exploit',
+      items: [
+        'Log Parachute',
+        'Up Player',
+        'Telekill to me',
+        'Fast Swap',
+        'No Recoil',
+        'Shoot Trace',
+        'Aimlock2x',
+        'Spin Bot',
+        'No Scope Awm',
+        'Back Jump',
+      ],
+    },
+    {
+      title: 'Visuals ESP',
+      items: [
+        'Snaplines',
+        'Glow',
+        'Box',
+        'Nome dos inimigos',
+        'Distancia',
+        'Skeleton',
+        'enable esp',
+        'distance',
+        'lines color',
+        'box color',
+        'Esp weapon',
+        'Esp Icon weapon',
+        'name color',
+        'dist color',
+        'skel color',
+      ],
+    },
+  ],
+}
+
+const resellerBenefitItems: Record<CheckoutContext, string[]> = {
+  internal: [
+    'Download liberado em acesso-pc apos confirmacao',
+    'Key enviada no WhatsApp pelo atendimento',
+    'Plano vinculado ao numero informado',
+    'Suporte para ativar no app de PC',
+    'Entrega separada do Gordin du Xit mobile',
+  ],
+  external: [
+    'Download liberado em acesso-pc apos confirmacao',
+    'Key enviada no WhatsApp pelo atendimento',
+    'Plano vinculado ao numero informado',
+    'Suporte para instalar e validar no PC',
+    'Entrega separada do Gordin du Xit mobile',
+  ],
+}
+
+function getResellerPlanOption(context: CheckoutContext, plan: PlanType): PlanOption {
+  const item = defaultResellerPlanCatalog[context][plan]
+  return {
+    value: item.value,
+    label: item.label,
+    price: item.price,
+    priceLabel: item.priceLabel,
+    badge: item.badge,
+    detail: item.detail,
+  }
+}
+
 const pluginModules = [
   'License Bridge',
   'Device Binder',
@@ -357,6 +511,10 @@ function normalizePhone(value: string) {
 
 function formatPhone(value: string) {
   return formatBrazilPhone(value)
+}
+
+function splitPriceLabel(priceLabel: string) {
+  return priceLabel.replace(/^R\$\s*/u, '').replace(/^R\$\u00a0*/u, '').trim().split(',')
 }
 
 function validatePhone(phone: string) {
@@ -398,6 +556,40 @@ function getActivePlan(chat: Chat | null): PlanType | '' {
     return chat.payment.plan
   }
   return ''
+}
+
+function isResellerPlanOwned(chat: Chat | null, context: CheckoutContext, plan: PlanType) {
+  const access = chat?.resellerAccess?.[context]
+  if (access?.status !== 'active' || access.plan !== plan) return false
+  const expiresAt = access.expiresAt?.toMillis?.()
+  return !expiresAt || expiresAt > Date.now()
+}
+
+function isResellerPurchaseActive(purchase: NonNullable<Chat['resellerPurchases']>[number]) {
+  if (purchase.status !== 'paid' || !purchase.plan || !purchase.accessType) return false
+  const expiresAt = purchase.expiresAt?.toMillis?.()
+  return !expiresAt || expiresAt > Date.now()
+}
+
+function getResellerPurchases(chat: Chat | null, context: CheckoutContext) {
+  return (chat?.resellerPurchases || [])
+    .filter((purchase) => purchase.accessType === context && purchase.status === 'paid')
+    .sort((first, second) => {
+      const firstTime = first.activatedAt?.toMillis?.() || 0
+      const secondTime = second.activatedAt?.toMillis?.() || 0
+      return secondTime - firstTime
+    })
+}
+
+function getResellerAccess(chat: Chat | null, context: CheckoutContext) {
+  const activePurchase = getResellerPurchases(chat, context).find(isResellerPurchaseActive)
+  if (activePurchase) return activePurchase
+
+  const access = chat?.resellerAccess?.[context]
+  if (access?.status !== 'active' || !access.plan) return null
+  const expiresAt = access.expiresAt?.toMillis?.()
+  if (expiresAt && expiresAt <= Date.now()) return null
+  return access
 }
 
 function getPurchaseCode(chat: Chat | null) {
@@ -694,7 +886,7 @@ function PlansPageOld({
           const visual = planVisuals[plan.value]
           const isOwned = activePlan === plan.value
           const isSelected = selectedPlan === plan.value || chat?.selectedPlan?.plan === plan.value
-          const [main, cents = '00'] = plan.priceLabel.replace('R$ ', '').split(',')
+          const [main, cents = '00'] = splitPriceLabel(plan.priceLabel)
 
           return (
             <article key={plan.value} className={`portal-plan-card ${visual.tone} ${isOwned ? 'owned' : ''}`}>
@@ -840,9 +1032,9 @@ function PlansPage({
           <div className="ffp-content">
             <section className="ffp-hero">
               <h3>
-                Eleve
+                Planos
                 {' '}
-                <strong>seu jogo</strong>
+                <strong>Android/iOS</strong>
               </h3>
             </section>
 
@@ -878,7 +1070,7 @@ function PlansPage({
                     option.value,
                   )
                   const detailsOpen = canOpenDetails && expandedPlanDetails === option.value
-                  const [priceMain, priceCents = '00'] = option.priceLabel.replace('R$ ', '').split(',')
+                  const [priceMain, priceCents = '00'] = splitPriceLabel(option.priceLabel)
                   const paymentLink = paymentLinks[option.value]
 
                   return (
@@ -1063,40 +1255,125 @@ function PlansPage({
 function PlanCheckoutPage({
   chat,
   plan,
+  checkoutMode,
+  checkoutContext,
   canOpenPlugin,
   selectedDevice,
   selectedPlan,
   saving,
   paymentLinks,
+  planOptionsList,
+  pixPayment,
+  pixError,
   onBuy,
+  onGeneratePix,
 }: {
   chat: Chat | null
   plan: PlanType
+  checkoutMode: CheckoutMode
+  checkoutContext: CheckoutContext
   canOpenPlugin: boolean
   selectedDevice: DeviceType | ''
   selectedPlan: PlanType | ''
   saving: boolean
   paymentLinks: Record<PlanType, string>
+  planOptionsList: PlanOption[]
+  pixPayment: PixCheckoutResult | null
+  pixError: string
   onBuy: (target: PaymentTarget, link: string, label: string) => void
+  onGeneratePix: (plan: PlanType, context: CheckoutContext) => void
 }) {
+  const isPixCheckout = checkoutMode === 'pix'
+  const resellerPlanOwned = isPixCheckout ? isResellerPlanOwned(chat, checkoutContext, plan) : false
   const activePlan = getActivePlan(chat)
   const purchaseCode = getPurchaseCode(chat)
   const device = getSelectedDevice(chat, selectedDevice)
-  const option = planOptions.find((item) => item.value === plan) || planOptions[0]
+  const option = isPixCheckout
+    ? getResellerPlanOption(checkoutContext, plan)
+    : planOptionsList.find((item) => item.value === plan) || planOptionsList[0] || planOptions[0]
   const visual = gamePlanVisuals[plan]
-  const deal = planDealMap[plan]
-  const isOwned = activePlan === plan
+  const deal = isPixCheckout
+    ? {
+        ...planDealMap[plan],
+        realPrice: defaultResellerPlanCatalog[checkoutContext][plan].normalPriceLabel,
+      }
+    : planDealMap[plan]
+  const isOwned = isPixCheckout ? resellerPlanOwned : activePlan === plan
   const isSelected = selectedPlan === plan || chat?.selectedPlan?.plan === plan
-  const canOpenDetails = Boolean(activePlan)
+  const canOpenDetails = isPixCheckout ? false : Boolean(activePlan)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [showAllFeatures, setShowAllFeatures] = useState(false)
+  const [portalMounted, setPortalMounted] = useState(false)
   const visibleDetailsOpen = canOpenDetails && detailsOpen
   const posterPlanDetailItems = getPosterPlanDetailItems(isPluginReady(chat, device), device, activePlan, plan)
-  const [priceMain, priceCents = '00'] = option.priceLabel.replace('R$ ', '').split(',')
+  const [priceMain, priceCents = '00'] = splitPriceLabel(option.priceLabel)
   const paymentLink = paymentLinks[plan]
+  const canSubmit = isPixCheckout || Boolean(paymentLink)
+  const checkoutButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [showFixedCheckoutButton, setShowFixedCheckoutButton] = useState(isPixCheckout)
+  const checkoutButtonLabel = !canSubmit
+    ? 'Link indisponivel'
+    : isOwned
+      ? 'Voce possui este plano'
+      : saving
+          ? 'Aguarde...'
+        : isPixCheckout
+          ? 'REALIZAR PAGAMENTO'
+          : 'Continuar ->'
+
+  const handleCheckoutSubmit = () => {
+    if (isPixCheckout) {
+      onGeneratePix(plan, checkoutContext)
+      return
+    }
+    onBuy(plan, paymentLink, `Comprar ${option.label}`)
+  }
+
+  const handleScrollToCheckout = () => {
+    checkoutButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  useEffect(() => {
+    setPortalMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isPixCheckout || isOwned || pixPayment) {
+      setShowFixedCheckoutButton(false)
+      return
+    }
+
+    const updateFixedCheckoutButton = () => {
+      const button = checkoutButtonRef.current
+      if (!button) {
+        setShowFixedCheckoutButton(true)
+        return
+      }
+      const rect = button.getBoundingClientRect()
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+      const buttonVisible = rect.top < viewportHeight - 8 && rect.bottom > 8
+      setShowFixedCheckoutButton(!buttonVisible)
+    }
+
+    setShowFixedCheckoutButton(true)
+    const firstFrame = window.requestAnimationFrame(updateFixedCheckoutButton)
+    const secondFrame = window.setTimeout(updateFixedCheckoutButton, 300)
+    const scrollContainer = document.querySelector('.portal-checkout-page')
+    window.addEventListener('scroll', updateFixedCheckoutButton, { passive: true })
+    window.addEventListener('resize', updateFixedCheckoutButton)
+    scrollContainer?.addEventListener('scroll', updateFixedCheckoutButton, { passive: true })
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      window.clearTimeout(secondFrame)
+      window.removeEventListener('scroll', updateFixedCheckoutButton)
+      window.removeEventListener('resize', updateFixedCheckoutButton)
+      scrollContainer?.removeEventListener('scroll', updateFixedCheckoutButton)
+    }
+  }, [isOwned, isPixCheckout, pixPayment, plan])
 
   return (
-    <div className="plan-fullscreen ffp-modal portal-ffp-page portal-checkout-page" role="region" aria-label={`Comprar plano ${option.label}`}>
+    <div className={`plan-fullscreen ffp-modal portal-ffp-page portal-checkout-page ${isPixCheckout ? `portal-reseller-checkout portal-reseller-${checkoutContext}` : ''}`} role="region" aria-label={`Comprar plano ${option.label}`}>
       <main className="ffp-page">
         <section className="ffp-poster">
           <div className="ffp-bg" aria-hidden="true">
@@ -1118,10 +1395,10 @@ function PlanCheckoutPage({
             <span className="ffp-ring ffp-ring-b" />
           </div>
 
-          {canOpenPlugin && (
+          {!isPixCheckout && canOpenPlugin && (
             <header className="ffp-controls portal-ffp-controls">
               <nav className="portal-mode-switch" aria-label="Area do cliente">
-                <a className="active" href={`/pay${plan === 'weekly' ? 'semanal' : plan === 'monthly' ? 'mensal' : 'permanente'}`}>Plano</a>
+                <a className="active" href={checkoutPlanPaths[plan]}>Plano</a>
                 <a href="/plugins">Plugin</a>
               </nav>
             </header>
@@ -1143,46 +1420,74 @@ function PlanCheckoutPage({
                   </div>
 
                   <div className="ffp-item-list">
-                    {posterPlanSummaryItems.map((item) =>
-                      'action' in item && item.action === 'features' ? (
+                    {isPixCheckout ? (
+                      <div className="portal-reseller-features">
+                        <section className="portal-reseller-benefits">
+                          <div>
+                            {resellerBenefitItems[checkoutContext].map((item) => (
+                              <span key={item}>
+                                <i aria-hidden="true" />
+                                <b>{item}</b>
+                              </span>
+                            ))}
+                          </div>
+                        </section>
+                        {resellerFeatureSections[checkoutContext].map((section) => (
+                          <section key={section.title}>
+                            <h5>{section.title}</h5>
+                            <div>
+                              {section.items.map((item) => (
+                                <span key={item}>
+                                  <i aria-hidden="true" />
+                                  <b>{item}</b>
+                                </span>
+                              ))}
+                            </div>
+                          </section>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        {posterPlanSummaryItems.map((item) =>
+                          'action' in item && item.action === 'features' ? (
+                            <button
+                              type="button"
+                              className="ffp-feature-link"
+                              key={`${option.value}-${item.label}`}
+                              onClick={() => setShowAllFeatures(true)}
+                              aria-label="Ver lista completa de funcoes"
+                            >
+                              <i aria-hidden="true" />
+                              <b>{item.label}</b>
+                              <em aria-hidden="true">&gt;</em>
+                            </button>
+                          ) : (
+                            <span
+                              key={`${option.value}-${item.label}`}
+                              className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
+                            >
+                              <i aria-hidden="true" />
+                              <b>{item.label}</b>
+                              {'detail' in item && item.detail && <small>{item.detail}</small>}
+                            </span>
+                          ),
+                        )}
                         <button
                           type="button"
-                          className="ffp-feature-link"
-                          key={`${option.value}-${item.label}`}
-                          onClick={() => setShowAllFeatures(true)}
-                          aria-label="Ver lista completa de funcoes"
+                          className={`ffp-feature-link ffp-more-link ${!canOpenDetails ? 'locked' : ''}`}
+                          onClick={() => {
+                            if (!canOpenDetails) return
+                            setDetailsOpen((current) => !current)
+                          }}
+                          disabled={!canOpenDetails}
+                          aria-disabled={!canOpenDetails}
                         >
                           <i aria-hidden="true" />
-                          <b>{item.label}</b>
+                          <b>{visibleDetailsOpen ? 'Mostrar menos' : 'Ver mais'}</b>
                           <em aria-hidden="true">&gt;</em>
                         </button>
-                      ) : (
-                        <span
-                          key={`${option.value}-${item.label}`}
-                          className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
-                        >
-                          <i aria-hidden="true" />
-                          <b>{item.label}</b>
-                          {'detail' in item && item.detail && <small>{item.detail}</small>}
-                        </span>
-                      ),
-                    )}
-                    <button
-                      type="button"
-                      className={`ffp-feature-link ffp-more-link ${!canOpenDetails ? 'locked' : ''}`}
-                      onClick={() => {
-                        if (!canOpenDetails) return
-                        setDetailsOpen((current) => !current)
-                      }}
-                      disabled={!canOpenDetails}
-                      aria-disabled={!canOpenDetails}
-                    >
-                      <i aria-hidden="true" />
-                      <b>{visibleDetailsOpen ? 'Mostrar menos' : 'Ver mais'}</b>
-                      <em aria-hidden="true">&gt;</em>
-                    </button>
-                    {visibleDetailsOpen &&
-                      posterPlanDetailItems.map((item) => (
+                        {visibleDetailsOpen &&
+                          posterPlanDetailItems.map((item) => (
                         <span
                           key={`${option.value}-detail-${item.label}`}
                           className={'tone' in item && item.tone === 'negative' ? 'ffp-item-negative' : undefined}
@@ -1191,14 +1496,18 @@ function PlanCheckoutPage({
                           <b>{item.label}</b>
                           {'detail' in item && item.detail && <small>{item.detail}</small>}
                         </span>
-                      ))}
+                          ))}
+                      </>
+                    )}
                   </div>
 
                   <div className="ffp-price">
-                    <div className="ffp-price-compare">
-                      <span>Valor normal</span>
-                      <s>{deal.realPrice}</s>
-                    </div>
+                    {!isPixCheckout && (
+                      <div className="ffp-price-compare">
+                        <span>Valor normal</span>
+                        <s>{deal.realPrice}</s>
+                      </div>
+                    )}
                     <div className="ffp-price-row">
                       <div className="ffp-price-value" aria-label={`${option.priceLabel} - ${deal.duration}`}>
                         <em>Por</em>
@@ -1211,15 +1520,64 @@ function PlanCheckoutPage({
                   </div>
 
                   <button
+                    ref={checkoutButtonRef}
                     type="button"
                     className={`ffp-buy-button portal-checkout-submit ${isOwned ? 'portal-owned-button owned' : ''}`}
-                    onClick={() => onBuy(plan, paymentLink, `Comprar ${option.label}`)}
-                    disabled={saving || isOwned || !paymentLink}
+                    onClick={handleCheckoutSubmit}
+                    disabled={saving || isOwned || !canSubmit}
                   >
-                    {!paymentLink ? 'Link indisponivel' : isOwned ? 'Voce possui este plano' : 'Continuar ->'}
+                    {checkoutButtonLabel}
                   </button>
 
-                  <p className="portal-checkout-secure">Pagamento 100% seguro, processado com criptografia 128bits.</p>
+                  {isPixCheckout && portalMounted && showFixedCheckoutButton && createPortal(
+                    <div className="portal-fixed-checkout-bar">
+                      <button
+                        type="button"
+                        className="portal-fixed-checkout-arrow"
+                        onClick={handleScrollToCheckout}
+                        aria-label="Rolar para o pagamento"
+                      >
+                        <span aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className={`ffp-buy-button portal-checkout-submit portal-fixed-checkout-submit ${checkoutContext === 'internal' ? 'portal-fixed-internal' : 'portal-fixed-external'}`}
+                        onClick={handleCheckoutSubmit}
+                        disabled={saving || isOwned || !canSubmit}
+                      >
+                        {checkoutButtonLabel}
+                      </button>
+                    </div>,
+                    document.body,
+                  )}
+
+                  {!isPixCheckout && (
+                    <p className="portal-checkout-secure">
+                      Pagamento 100% seguro, processado com criptografia 128bits.
+                    </p>
+                  )}
+
+                  {pixError && <p className="portal-checkout-pix-error">{pixError}</p>}
+
+                  {isPixCheckout && pixPayment && (
+                    <section className="portal-pix-panel" aria-label="Pix gerado">
+                      <span>Pix {pixPayment.status}</span>
+                      <strong>{pixPayment.priceLabel}</strong>
+                      {pixPayment.qrCodeBase64 && (
+                        <img src={`data:image/png;base64,${pixPayment.qrCodeBase64}`} alt="QR Code Pix" />
+                      )}
+                      <label>
+                        <small>Copia e cola</small>
+                        <textarea value={pixPayment.qrCode} readOnly rows={4} />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(pixPayment.qrCode).catch(() => undefined)}
+                      >
+                        Copiar PIX
+                      </button>
+                    </section>
+                  )}
 
                   {isOwned && purchaseCode && (
                     <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
@@ -1712,7 +2070,7 @@ function DownloadPage({
           <header className="ffp-controls portal-ffp-controls">
             <nav className="portal-mode-switch" aria-label="Navegacao do download">
               <button className="portal-plugin-back" type="button" onClick={onBack}>Voltar</button>
-              <a className="active" href="/baixar-xit">Download</a>
+              <a className="active" href="/acesso-aqui">Download</a>
             </nav>
           </header>
 
@@ -1778,6 +2136,206 @@ function DownloadPage({
                 </ol>
               </section>
             </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  )
+}
+
+function PcAccessPage({
+  chat,
+  settings,
+}: {
+  chat: Chat | null
+  settings: PcAccessSettings
+}) {
+  const entries: Array<{ type: ResellerAccessType; label: string }> = [
+    { type: 'internal', label: 'Internal' },
+    { type: 'external', label: 'External' },
+  ]
+  const activeEntries = entries
+    .map((entry) => ({
+      ...entry,
+      access: getResellerAccess(chat, entry.type),
+      download: settings[entry.type],
+    }))
+    .filter((entry) => Boolean(entry.access))
+  const tutorialGroups = activeEntries
+    .map((entry) => ({
+      ...entry,
+      links: [
+        ...(entry.download.tutorials || []),
+        ...(entry.download.tutorialUrl ? [{ label: `Tutorial ${entry.label}`, url: entry.download.tutorialUrl }] : []),
+      ],
+    }))
+    .filter((entry) => entry.links.length > 0)
+  const fixErrorGroups = activeEntries
+    .map((entry) => ({
+      ...entry,
+      links: entry.download.fixErrors || [],
+    }))
+    .filter((entry) => entry.links.length > 0)
+
+  return (
+    <div className="plan-fullscreen ffp-modal portal-ffp-page portal-download-page" role="region" aria-label="Acesso PC">
+      <main className="ffp-page">
+        <section className="ffp-poster">
+          <div className="ffp-content portal-download-content">
+            <section className="ffp-hero portal-download-hero">
+              <span className="ffp-badge">Acesso PC</span>
+              <h3><span>acesso</span> <strong>pc</strong></h3>
+              <p>Downloads liberados apos confirmacao do Pix. A key final e enviada pelo atendimento no WhatsApp.</p>
+            </section>
+
+            <div className="portal-download-grid">
+              {entries.map(({ type, label }) => {
+                const access = getResellerAccess(chat, type)
+                const purchases = getResellerPurchases(chat, type)
+                const download = settings[type]
+                const files = download.files?.length
+                  ? download.files
+                  : download.downloadUrl
+                    ? [{ label: download.title || label, url: download.downloadUrl }]
+                    : []
+                const available = Boolean(access && download.enabled && files.length > 0)
+
+                return (
+                  <section key={type} className="portal-download-main-card">
+                    <div className="portal-download-product">
+                      <span>{label.slice(0, 3).toUpperCase()}</span>
+                      <div>
+                        <small>{label}</small>
+                        <strong>{download.title || label}</strong>
+                        <p>{access ? `Plano ${planOptions.find((plan) => plan.value === access.plan)?.label || access.plan} ativo.` : 'Nenhum plano ativo nesta categoria.'}</p>
+                      </div>
+                    </div>
+
+                    {available ? (
+                      <div className="portal-pc-download-files">
+                        {files.map((file) => (
+                          <a
+                            key={`${type}-${file.label}-${file.url}`}
+                            className="portal-download-primary"
+                            href={file.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Baixar {file.label}
+                          </a>
+                        ))}
+                        {download.tutorialUrl && (
+                          <a
+                            className="portal-download-secondary"
+                            href={download.tutorialUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Ver tutorial
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="portal-download-unavailable">
+                        {!access
+                          ? `Compre e confirme o ${label} para liberar este download.`
+                          : 'Download ainda nao cadastrado no painel admin.'}
+                      </p>
+                    )}
+
+                    <div className="portal-download-status-grid portal-download-status-compact">
+                      <span>
+                        <small>Status</small>
+                        <b>{access ? 'Compra confirmada' : 'Pendente'}</b>
+                      </span>
+                      <span>
+                        <small>Versao</small>
+                        <b>{download.versionName || '1.0'}</b>
+                      </span>
+                    </div>
+
+                    {purchases.length > 0 && (
+                      <div className="portal-pc-purchase-list">
+                        <small>Compras registradas</small>
+                        {purchases.map((purchase) => {
+                          const planLabel = planOptions.find((plan) => plan.value === purchase.plan)?.label || purchase.plan || 'Plano'
+                          const expiresAt = purchase.expiresAt?.toDate?.()
+
+                          return (
+                            <span key={purchase.id || purchase.paymentCode}>
+                              <b>{planLabel}</b>
+                              <em>{purchase.priceLabel || ''}</em>
+                              <strong>{purchase.paymentCode || purchase.platformCode || purchase.id}</strong>
+                              <i>{expiresAt ? `Expira ${expiresAt.toLocaleDateString('pt-BR')}` : 'Lifetime'}</i>
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {download.notes && <p className="portal-download-unavailable">{download.notes}</p>}
+                  </section>
+                )
+              })}
+            </div>
+
+            {tutorialGroups.length > 0 && (
+              <section className="portal-pc-resource-section" aria-label="Tutoriais">
+                <div className="portal-pc-resource-head">
+                  <span>Tutoriais</span>
+                  <strong>Instalacao e uso</strong>
+                </div>
+                <div className="portal-pc-resource-grid">
+                  {tutorialGroups.map(({ type, label, links }) => (
+                    <article key={`tutorial-${type}`} className="portal-pc-resource-card">
+                      <small>{label}</small>
+                      <strong>Acessar tutoriais {label}</strong>
+                      <div>
+                        {links.map((item) => (
+                          <a
+                            key={`${type}-tutorial-${item.label}-${item.url}`}
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {item.label}
+                          </a>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {fixErrorGroups.length > 0 && (
+              <section className="portal-pc-resource-section" aria-label="Fix erros">
+                <div className="portal-pc-resource-head">
+                  <span>Fix errors</span>
+                  <strong>Erros e solucoes</strong>
+                </div>
+                <div className="portal-pc-resource-grid">
+                  {fixErrorGroups.map(({ type, label, links }) => (
+                    <article key={`fix-${type}`} className="portal-pc-resource-card">
+                      <small>{label}</small>
+                      <strong>Correcoes {label}</strong>
+                      <div>
+                        {links.map((item) => (
+                          <a
+                            key={`${type}-fix-${item.label}-${item.url}`}
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {item.label}
+                          </a>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </section>
       </main>
@@ -1860,13 +2418,19 @@ function NotFoundAccess() {
 export function ClientPortal({
   initialTab = 'plans',
   checkoutPlan,
+  checkoutMode = 'external',
+  checkoutContext = 'external',
   downloadPage = false,
+  pcAccessPage = false,
   previewAuth = false,
   previewPlugin = false,
 }: {
   initialTab?: PortalTab
   checkoutPlan?: PlanType
+  checkoutMode?: CheckoutMode
+  checkoutContext?: CheckoutContext
   downloadPage?: boolean
+  pcAccessPage?: boolean
   previewAuth?: boolean
   previewPlugin?: boolean
 }) {
@@ -1882,9 +2446,13 @@ export function ClientPortal({
   const [blockedAccess, setBlockedAccess] = useState(() => getStoredAccountBlocked())
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('perfect-pay')
   const [paymentLinks, setPaymentLinks] = useState<Record<PlanType, string>>(getPaymentLinks('perfect-pay'))
+  const [planOptionsList, setPlanOptionsList] = useState<PlanOption[]>(planOptions)
   const [pluginPaymentLink, setPluginPaymentLink] = useState(getPluginPaymentLink('perfect-pay'))
+  const [pixPayment, setPixPayment] = useState<PixCheckoutResult | null>(null)
+  const [pixError, setPixError] = useState('')
   const [approvalNotice, setApprovalNotice] = useState<PaymentNotice | null>(null)
   const [appUpdateSettings, setAppUpdateSettings] = useState<AppUpdateSettings>(defaultAppUpdateSettings)
+  const [pcAccessSettings, setPcAccessSettings] = useState<PcAccessSettings>(defaultPcAccessSettings)
   const [downloadOpen, setDownloadOpen] = useState(false)
   const [authPreview, setAuthPreview] = useState(previewAuth)
   const activePlan = getActivePlan(chatMeta)
@@ -1892,12 +2460,16 @@ export function ClientPortal({
   const canOpenPlugin = Boolean(activePlan && (currentDevice === 'android' || currentDevice === 'emulator'))
   const visibleTab = initialTab === 'plugins' && canOpenPlugin ? 'plugins' : 'plans'
   const expectedAuthReturnPath = checkoutPlan
-    ? checkoutPlanPaths[checkoutPlan]
+    ? checkoutMode === 'pix'
+      ? getPixCheckoutPath(checkoutPlan, checkoutContext)
+      : checkoutPlanPaths[checkoutPlan]
     : downloadPage
-      ? '/baixar-xit'
-      : initialTab === 'plugins'
-        ? '/plugins'
-        : ''
+      ? '/acesso-aqui'
+      : pcAccessPage
+        ? '/acesso-pc'
+        : initialTab === 'plugins'
+          ? '/plugins'
+          : ''
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -1913,6 +2485,7 @@ export function ClientPortal({
         const payload = (await response.json()) as {
           paymentProvider?: PaymentProvider
           links?: Record<PlanType, string>
+          plans?: PublicPlanCatalogItem[]
           pluginLink?: string
         }
 
@@ -1923,6 +2496,16 @@ export function ClientPortal({
             : 'perfect-pay'
         setPaymentProvider(provider)
         setPaymentLinks(payload.links || getPaymentLinks(provider))
+        if (payload.plans?.length) {
+          setPlanOptionsList(payload.plans.map((plan) => ({
+            value: plan.value,
+            label: plan.label,
+            price: plan.price,
+            priceLabel: plan.priceLabel,
+            badge: plan.badge,
+            detail: plan.detail,
+          })))
+        }
         setPluginPaymentLink(payload.pluginLink || getPluginPaymentLink(provider))
       } catch {
         if (active) {
@@ -1990,7 +2573,7 @@ export function ClientPortal({
 
     let active = true
 
-    loadAppUpdateSettings()
+    loadAppUpdateSettings({ chatId, accountId })
       .then((settings) => {
         if (active) setAppUpdateSettings(settings)
       })
@@ -2001,7 +2584,25 @@ export function ClientPortal({
     return () => {
       active = false
     }
-  }, [downloadPage, chatId])
+  }, [accountId, downloadPage, chatId])
+
+  useEffect(() => {
+    if (!pcAccessPage || !chatId) return undefined
+
+    let active = true
+
+    loadPcAccessSettings({ chatId, accountId })
+      .then((settings) => {
+        if (active) setPcAccessSettings(settings)
+      })
+      .catch((settingsError) => {
+        console.error('Nao foi possivel carregar os downloads PC:', settingsError)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [accountId, pcAccessPage, chatId])
 
   useEffect(() => {
     if (!chatId) {
@@ -2040,6 +2641,7 @@ export function ClientPortal({
       const access = await requestChatAccess({
         username: phoneValue,
         password: passwordValue,
+        device,
         mode,
         clientId: getClientId(),
         requestedChatId: getStoredChatId() || makeId('site'),
@@ -2142,6 +2744,50 @@ export function ClientPortal({
     }
   }
 
+  async function handleGeneratePix(plan: PlanType, context: CheckoutContext) {
+    if (!chatId || !accountId || saving) return
+    setSaving(true)
+    setError('')
+    setPixError('')
+    setPixPayment(null)
+
+    try {
+      await savePlanSelection({ chatId, accountId, plan })
+      storePlan(chatId, plan)
+      setSelectedPlan(plan)
+
+      const user = await ensureAnonymousSession()
+      const idToken = await user.getIdToken()
+      const response = await fetch('/api/payment/pix', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          idToken,
+          chatId,
+          accountId,
+          plan,
+          context,
+        }),
+      })
+      const payload = (await response.json()) as PixCheckoutResult & { error?: string }
+
+      if (!response.ok || !payload.qrCode) {
+        throw new Error(payload.error || 'Nao foi possivel gerar o Pix.')
+      }
+
+      setPaymentProvider('mercado-pago')
+      setPixPayment(payload)
+    } catch (pixGenerationError) {
+      const message = pixGenerationError instanceof Error ? pixGenerationError.message : 'Nao foi possivel gerar o Pix.'
+      setPixError(message)
+      setError(message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function handleOpenDownload() {
     if (!canDownloadXit(currentDevice)) return
 
@@ -2160,7 +2806,7 @@ export function ClientPortal({
       console.error('Nao foi possivel registrar o clique de download:', activityError)
     })
 
-    window.location.assign('/baixar-xit')
+      window.location.assign('/acesso-aqui')
   }
 
   function handleDownloadLinkClick() {
@@ -2239,7 +2885,9 @@ export function ClientPortal({
     <main className="portal-shell">
       {error && <div className="portal-error-banner">{error}</div>}
 
-      {downloadPage ? (
+      {pcAccessPage ? (
+        <PcAccessPage chat={chatMeta} settings={pcAccessSettings} />
+      ) : downloadPage ? (
         <DownloadPage
           chat={chatMeta}
           selectedDevice={selectedDevice}
@@ -2251,12 +2899,18 @@ export function ClientPortal({
         <PlanCheckoutPage
           chat={chatMeta}
           plan={checkoutPlan}
+          checkoutMode={checkoutMode}
+          checkoutContext={checkoutContext}
           canOpenPlugin={canOpenPlugin}
           selectedDevice={selectedDevice}
           selectedPlan={selectedPlan}
           saving={saving}
           paymentLinks={paymentLinks}
+          planOptionsList={planOptionsList}
+          pixPayment={pixPayment}
+          pixError={pixError}
           onBuy={handleBuy}
+          onGeneratePix={handleGeneratePix}
         />
       ) : visibleTab === 'plugins' ? (
         <PluginPage
@@ -4439,6 +5093,12 @@ function PortalStyles() {
         color: #475569 !important;
       }
 
+      .portal-shell .portal-ffp-page .ffp-daily {
+        --ffp-a: #86efac;
+        --ffp-b: #22c55e;
+        --ffp-c: #16a34a;
+      }
+
       .portal-shell .portal-ffp-page .ffp-weekly {
         --ffp-a: #fde047;
         --ffp-b: #f59e0b;
@@ -4880,6 +5540,11 @@ function PortalStyles() {
         display: none !important;
       }
 
+      .portal-shell .portal-checkout-page .ffp-daily {
+        --checkout-accent-a: #22c55e;
+        --checkout-accent-b: #16a34a;
+      }
+
       .portal-shell .portal-checkout-page .ffp-weekly {
         --checkout-accent-a: #f59e0b;
         --checkout-accent-b: #f97316;
@@ -4978,6 +5643,613 @@ function PortalStyles() {
         font-weight: 650;
         line-height: 1.4;
         text-align: center;
+      }
+
+      .portal-checkout-pix-error {
+        width: calc(100% - 40px);
+        margin: -4px 20px 14px;
+        border: 1px solid rgba(239, 68, 68, 0.24);
+        border-radius: 6px;
+        background: #fef2f2;
+        color: #991b1b;
+        padding: 10px;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.35;
+        text-align: center;
+      }
+
+      .portal-pix-panel {
+        width: calc(100% - 40px);
+        display: grid;
+        gap: 10px;
+        margin: 0 20px 20px;
+        border: 1px solid rgba(20, 184, 166, 0.24);
+        border-radius: 8px;
+        background: #f0fdfa;
+        padding: 12px;
+      }
+
+      .portal-pix-panel > span,
+      .portal-pix-panel small {
+        color: #0f766e;
+        font-size: 11px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-pix-panel > strong {
+        color: #0f172a;
+        font-size: 24px;
+        line-height: 1;
+      }
+
+      .portal-pix-panel img {
+        width: min(100%, 220px);
+        justify-self: center;
+        border: 8px solid #ffffff;
+        border-radius: 8px;
+      }
+
+      .portal-pix-panel label {
+        display: grid;
+        gap: 6px;
+      }
+
+      .portal-pix-panel textarea {
+        width: 100%;
+        resize: none;
+        border: 1px solid rgba(15, 118, 110, 0.22);
+        border-radius: 6px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 10px;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .portal-pix-panel button {
+        min-height: 42px;
+        border: 0;
+        border-radius: 5px;
+        background: #0f766e;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .portal-reseller-checkout .ffp-content {
+        padding-top: 24px !important;
+        padding-bottom: 22px !important;
+      }
+
+      .portal-reseller-checkout .portal-checkout-grid {
+        display: block !important;
+      }
+
+      .portal-reseller-checkout .ffp-card-list {
+        width: min(100%, 640px) !important;
+        max-width: 640px !important;
+        margin: 0 auto !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-card,
+      .portal-reseller-checkout .ffp-price-card.selected {
+        border: 1px solid rgba(34, 197, 94, 0.2) !important;
+        border-radius: 38px !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 244, 0.9)) !important;
+        box-shadow:
+          0 30px 84px rgba(22, 163, 74, 0.15),
+          inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+        overflow: visible !important;
+        backdrop-filter: blur(18px);
+      }
+
+      .portal-reseller-checkout .ffp-price-card::before,
+      .portal-reseller-checkout .ffp-price-card::after {
+        border-radius: 38px !important;
+      }
+
+      .portal-shell .portal-reseller-checkout .ffp-price-card,
+      .portal-shell .portal-reseller-checkout .ffp-price-card.selected {
+        border-radius: 38px !important;
+      }
+
+      .portal-reseller-checkout .ffp-plan-head {
+        display: grid !important;
+        grid-template-columns: 58px minmax(0, 1fr) !important;
+        align-items: center !important;
+        gap: 13px !important;
+        padding: 18px 18px 10px !important;
+      }
+
+      .portal-reseller-checkout .ffp-plan-icon {
+        width: 58px !important;
+        height: 58px !important;
+        border-radius: 24px !important;
+        box-shadow: none !important;
+      }
+
+      .portal-reseller-checkout .ffp-plan-head span {
+        font-size: 10px !important;
+        font-weight: 950 !important;
+        letter-spacing: 0 !important;
+      }
+
+      .portal-reseller-checkout .ffp-plan-head h4 {
+        margin-top: 2px !important;
+        font-size: clamp(38px, 8vw, 58px) !important;
+        line-height: 0.86 !important;
+        letter-spacing: 0 !important;
+      }
+
+      .portal-reseller-checkout .ffp-plan-head small {
+        width: fit-content;
+        margin-top: 8px !important;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 11px !important;
+        font-weight: 950 !important;
+      }
+
+      .portal-reseller-internal .ffp-poster {
+        background:
+          radial-gradient(circle at 14% 0%, rgba(34, 197, 94, 0.24), transparent 22rem),
+          radial-gradient(circle at 88% 5%, rgba(20, 184, 166, 0.18), transparent 20rem),
+          linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 42%, #ffffff 100%) !important;
+      }
+
+      .portal-reseller-external .ffp-poster {
+        background:
+          radial-gradient(circle at 14% 0%, rgba(34, 197, 94, 0.22), transparent 22rem),
+          radial-gradient(circle at 88% 5%, rgba(20, 184, 166, 0.18), transparent 20rem),
+          linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 42%, #ffffff 100%) !important;
+      }
+
+      .portal-reseller-internal .ffp-price-card {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 244, 0.9)) !important;
+        box-shadow: 0 30px 84px rgba(22, 163, 74, 0.15) !important;
+      }
+
+      .portal-reseller-external .ffp-price-card {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 244, 0.9)) !important;
+        box-shadow: 0 30px 84px rgba(22, 163, 74, 0.15) !important;
+      }
+
+      .portal-reseller-internal .ffp-plan-icon {
+        background: linear-gradient(135deg, #86efac, #22c55e 52%, #16a34a) !important;
+        color: #ffffff !important;
+        box-shadow: 0 18px 34px rgba(22, 163, 74, 0.3) !important;
+      }
+
+      .portal-reseller-external .ffp-plan-icon {
+        background: linear-gradient(135deg, #86efac, #22c55e 52%, #16a34a) !important;
+        color: #ffffff !important;
+        box-shadow: 0 18px 34px rgba(22, 163, 74, 0.3) !important;
+      }
+
+      .portal-reseller-internal .ffp-plan-head h4 {
+        color: #15803d !important;
+      }
+
+      .portal-reseller-external .ffp-plan-head h4 {
+        color: #15803d !important;
+      }
+
+      .portal-reseller-internal .ffp-plan-head small {
+        background: #dcfce7;
+        color: #15803d;
+      }
+
+      .portal-reseller-external .ffp-plan-head small {
+        background: #dcfce7;
+        color: #15803d;
+      }
+
+      .portal-reseller-internal .portal-checkout-submit {
+        position: sticky !important;
+        bottom: 12px !important;
+        z-index: 8 !important;
+        width: calc(100% - 28px) !important;
+        min-height: 62px !important;
+        margin: 14px 14px 16px !important;
+        border-radius: 24px !important;
+        background: linear-gradient(135deg, #22c55e, #16a34a) !important;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32) !important;
+        color: #ffffff !important;
+        font-size: 18px !important;
+        letter-spacing: 0.035em !important;
+      }
+
+      .portal-reseller-external .portal-checkout-submit {
+        position: sticky !important;
+        bottom: 12px !important;
+        z-index: 8 !important;
+        width: calc(100% - 28px) !important;
+        min-height: 62px !important;
+        margin: 14px 14px 16px !important;
+        border-radius: 24px !important;
+        background: linear-gradient(135deg, #22c55e, #16a34a) !important;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32) !important;
+        color: #ffffff !important;
+        font-size: 18px !important;
+        letter-spacing: 0.035em !important;
+      }
+
+      .portal-fixed-checkout-bar {
+        position: fixed !important;
+        right: auto !important;
+        bottom: max(12px, env(safe-area-inset-bottom)) !important;
+        left: 50% !important;
+        z-index: 2147483000 !important;
+        width: min(520px, calc(100vw - 28px)) !important;
+        margin: 0 !important;
+        transform: translateX(-50%) !important;
+        pointer-events: auto !important;
+        display: grid !important;
+        justify-items: center !important;
+        gap: 8px !important;
+        animation: portalFixedCheckoutIn 180ms ease-out both;
+      }
+
+      .portal-fixed-checkout-arrow {
+        display: grid !important;
+        place-items: center !important;
+        width: 44px !important;
+        height: 44px !important;
+        border: 1px solid rgba(22, 163, 74, 0.24) !important;
+        border-radius: 999px !important;
+        background: linear-gradient(180deg, #ffffff, #dcfce7) !important;
+        box-shadow: 0 14px 30px rgba(22, 163, 74, 0.24) !important;
+        cursor: pointer !important;
+      }
+
+      .portal-fixed-checkout-arrow span {
+        display: block !important;
+        width: 12px !important;
+        height: 12px !important;
+        margin-top: -3px !important;
+        border-right: 3px solid #16a34a !important;
+        border-bottom: 3px solid #16a34a !important;
+        transform: rotate(45deg) !important;
+      }
+
+      .portal-fixed-checkout-submit {
+        position: static !important;
+        width: 100% !important;
+        margin: 0 !important;
+        transform: none !important;
+        font-size: 18px !important;
+        letter-spacing: 0.035em !important;
+      }
+
+      .portal-fixed-internal {
+        min-height: 62px !important;
+        border-radius: 24px !important;
+        background: linear-gradient(135deg, #22c55e, #16a34a) !important;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32) !important;
+        color: #ffffff !important;
+      }
+
+      .portal-fixed-external {
+        min-height: 62px !important;
+        border-radius: 24px !important;
+        background: linear-gradient(135deg, #22c55e, #16a34a) !important;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32) !important;
+        color: #ffffff !important;
+      }
+
+      @keyframes portalFixedCheckoutIn {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0);
+        }
+      }
+
+      .portal-reseller-checkout .ffp-item-list {
+        margin: 8px 16px 0 !important;
+        gap: 12px !important;
+      }
+
+      .portal-reseller-features {
+        display: grid;
+        gap: 9px;
+      }
+
+      .portal-reseller-features section {
+        display: grid;
+        gap: 6px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        padding: 0;
+        box-shadow: none;
+      }
+
+      .portal-reseller-internal .portal-reseller-features section {
+        border-color: transparent;
+        background: transparent;
+      }
+
+      .portal-reseller-features h5 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 0;
+        color: #14532d;
+        font-size: 12px;
+        font-weight: 950;
+        letter-spacing: 0;
+      }
+
+      .portal-reseller-features h5::after {
+        content: '';
+        display: block;
+        height: 1px;
+        flex: 1;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(34, 197, 94, 0.34), rgba(20, 184, 166, 0.1));
+        padding: 0;
+      }
+
+      .portal-reseller-benefits h5::after {
+        content: 'INCLUSO';
+      }
+
+      .portal-reseller-features section > div {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 4px;
+      }
+
+      .portal-reseller-features span {
+        min-height: 25px;
+        display: grid !important;
+        grid-template-columns: 12px minmax(0, 1fr);
+        align-items: center;
+        gap: 4px;
+        margin: 0 !important;
+        border: 1px solid rgba(34, 197, 94, 0.18) !important;
+        border-radius: 999px !important;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(240, 253, 244, 0.72)) !important;
+        padding: 5px 8px !important;
+      }
+
+      .portal-shell .portal-reseller-checkout .ffp-item-list .portal-reseller-features span,
+      .portal-shell .portal-reseller-checkout .ffp-item-list .portal-reseller-features .ffp-feature-link {
+        border-radius: 999px !important;
+      }
+
+      .portal-reseller-internal .portal-reseller-features span {
+        border-color: rgba(34, 197, 94, 0.18) !important;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(240, 253, 244, 0.72)) !important;
+      }
+
+      .portal-reseller-features span i {
+        width: 12px;
+        height: 12px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #22c55e, #14b8a6);
+        box-shadow: 0 4px 10px rgba(20, 184, 166, 0.24);
+        opacity: 1;
+      }
+
+      .portal-reseller-features span i::before {
+        content: '';
+        width: 6px;
+        height: 4px;
+        border-left: 1.5px solid #ffffff;
+        border-bottom: 1.5px solid #ffffff;
+        transform: rotate(-45deg) translate(1px, -1px);
+      }
+
+      .portal-reseller-features span b {
+        font-size: 8px !important;
+        line-height: 1.05 !important;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-reseller-benefits section,
+      .portal-reseller-benefits {
+        margin-bottom: 0;
+      }
+
+      .portal-reseller-benefits {
+        border: 0 !important;
+        background: transparent !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+      }
+
+      .portal-reseller-benefits > div {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 4px !important;
+      }
+
+      .portal-reseller-benefits span b {
+        font-size: 8.5px !important;
+      }
+
+      .portal-reseller-internal .portal-reseller-benefits span {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background: linear-gradient(135deg, rgba(240, 253, 244, 0.95), rgba(255, 255, 255, 0.92)) !important;
+      }
+
+      .portal-reseller-external .portal-reseller-benefits span {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background: linear-gradient(135deg, rgba(240, 253, 244, 0.95), rgba(255, 255, 255, 0.92)) !important;
+      }
+
+      .portal-reseller-checkout .ffp-price {
+        display: grid !important;
+        justify-items: stretch !important;
+        align-items: stretch !important;
+        gap: 8px !important;
+        margin: 14px 16px 0 !important;
+        border-radius: 42px !important;
+        padding: 16px !important;
+        overflow: hidden !important;
+        box-shadow:
+          0 18px 40px rgba(22, 163, 74, 0.13),
+          inset 0 1px 0 rgba(255, 255, 255, 0.86) !important;
+      }
+
+      .portal-shell .portal-reseller-checkout .ffp-price {
+        border-radius: 42px !important;
+      }
+
+      .portal-reseller-checkout .ffp-price > * {
+        width: 100% !important;
+        max-width: none !important;
+        justify-self: stretch !important;
+      }
+
+      .portal-reseller-internal .ffp-price {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(220, 252, 231, 0.74)) !important;
+      }
+
+      .portal-reseller-external .ffp-price {
+        border-color: rgba(34, 197, 94, 0.2) !important;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(220, 252, 231, 0.74)) !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-compare {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        width: 100% !important;
+        min-width: 100% !important;
+        max-width: none !important;
+        justify-self: stretch !important;
+        align-self: stretch !important;
+        box-sizing: border-box !important;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 10px 12px;
+      }
+
+      .portal-shell .portal-reseller-checkout .ffp-price .ffp-price-compare {
+        width: 100% !important;
+        min-width: 100% !important;
+        justify-self: stretch !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-compare span,
+      .portal-reseller-checkout .ffp-price-row small {
+        color: #15803d !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-value strong,
+      .portal-reseller-checkout .ffp-price-value span,
+      .portal-reseller-checkout .ffp-price-value b {
+        color: #052e16 !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-row {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) auto !important;
+        align-items: end !important;
+        width: 100% !important;
+        column-gap: 12px !important;
+      }
+
+      .portal-shell .portal-reseller-checkout .ffp-price-row {
+        grid-template-columns: minmax(0, 1fr) auto !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-value {
+        width: 100% !important;
+        min-width: 0 !important;
+        justify-content: flex-start !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-value strong {
+        font-size: clamp(56px, 14vw, 78px) !important;
+        line-height: 0.82 !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-value b {
+        font-size: clamp(22px, 5vw, 30px) !important;
+      }
+
+      .portal-reseller-checkout .ffp-price-row small {
+        justify-self: end !important;
+        align-self: end !important;
+        min-width: 78px !important;
+        border-radius: 999px !important;
+        background: #dcfce7 !important;
+        padding: 8px 10px !important;
+        text-align: center !important;
+      }
+
+      .portal-reseller-checkout .portal-checkout-secure {
+        display: none !important;
+      }
+
+      .portal-reseller-checkout .portal-checkout-secure {
+        width: calc(100% - 32px) !important;
+        margin: 2px 16px 18px !important;
+        border-radius: 24px;
+        background: rgba(240, 253, 244, 0.8);
+        padding: 10px 12px;
+        color: #15803d !important;
+      }
+
+      .portal-reseller-checkout .portal-checkout-pix-error {
+        border-radius: 24px !important;
+      }
+
+      .portal-reseller-checkout .portal-pix-panel {
+        border-radius: 30px !important;
+        padding: 14px !important;
+      }
+
+      .portal-reseller-checkout .portal-pix-panel img {
+        border-radius: 22px !important;
+      }
+
+      .portal-reseller-checkout .portal-pix-panel textarea {
+        border-radius: 20px !important;
+      }
+
+      .portal-reseller-checkout .portal-pix-panel button {
+        border-radius: 999px !important;
+      }
+
+      @media (max-width: 520px) {
+        .portal-reseller-checkout .ffp-content {
+          padding: 12px 8px 16px !important;
+        }
+
+        .portal-reseller-checkout .ffp-plan-head {
+          grid-template-columns: 52px minmax(0, 1fr) !important;
+          padding: 16px 14px 8px !important;
+        }
+
+        .portal-reseller-checkout .ffp-plan-icon {
+          width: 52px !important;
+          height: 52px !important;
+        }
+
+        .portal-reseller-features section > div {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        }
       }
 
       .portal-mode-switch .portal-plugin-back {
@@ -5317,6 +6589,159 @@ function PortalStyles() {
         box-shadow: 0 18px 36px rgba(20, 184, 166, 0.24);
       }
 
+      .portal-pc-download-files {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .portal-pc-download-files .portal-download-primary,
+      .portal-pc-download-files .portal-download-secondary {
+        margin-top: 0;
+      }
+
+      .portal-pc-resource-section {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+        border: 1px solid rgba(20, 184, 166, 0.18);
+        border-radius: 24px;
+        background: rgba(240, 253, 250, 0.82);
+        padding: 14px;
+      }
+
+      .portal-pc-resource-head {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .portal-pc-resource-head span,
+      .portal-pc-resource-card small {
+        color: #0f766e;
+        font-size: 11px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-pc-resource-head strong {
+        color: #0f172a;
+        font-size: 16px;
+        line-height: 1.1;
+        text-align: right;
+      }
+
+      .portal-pc-resource-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .portal-pc-resource-card {
+        display: grid;
+        gap: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 20px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .portal-pc-resource-card strong {
+        color: #0f172a;
+        font-size: 15px;
+        line-height: 1.15;
+      }
+
+      .portal-pc-resource-card > div {
+        display: grid;
+        gap: 8px;
+      }
+
+      .portal-pc-resource-card a {
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #ffffff;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 950;
+        text-align: center;
+        text-decoration: none;
+        text-transform: uppercase;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-download-secondary {
+        min-height: 46px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin-top: 10px;
+        border: 1px solid rgba(15, 118, 110, 0.22);
+        border-radius: 12px;
+        background: #ffffff;
+        color: #0f766e;
+        font-size: 14px;
+        font-weight: 950;
+        text-decoration: none;
+      }
+
+      .portal-pc-purchase-list {
+        display: grid;
+        gap: 7px;
+        margin-top: 12px;
+      }
+
+      .portal-pc-purchase-list > small {
+        color: #0f766e;
+        font-size: 11px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .portal-pc-purchase-list span {
+        display: grid;
+        grid-template-columns: minmax(0, 0.7fr) auto;
+        gap: 3px 8px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 13px;
+        background: #ffffff;
+        padding: 9px;
+      }
+
+      .portal-pc-purchase-list b,
+      .portal-pc-purchase-list em,
+      .portal-pc-purchase-list strong,
+      .portal-pc-purchase-list i {
+        min-width: 0;
+        font-size: 11px;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-pc-purchase-list b {
+        color: #0f172a;
+      }
+
+      .portal-pc-purchase-list em {
+        justify-self: end;
+        color: #047857;
+        font-style: normal;
+        font-weight: 950;
+      }
+
+      .portal-pc-purchase-list strong,
+      .portal-pc-purchase-list i {
+        color: #64748b;
+        font-style: normal;
+        font-weight: 800;
+      }
+
       .portal-download-unavailable {
         margin: 14px 0 0;
         border: 1px solid rgba(249, 115, 22, 0.28);
@@ -5378,6 +6803,10 @@ function PortalStyles() {
         .portal-plugin-ffp .portal-plugin-grid,
         .portal-download-grid {
           grid-template-columns: 1fr !important;
+        }
+
+        .portal-pc-resource-grid {
+          grid-template-columns: 1fr;
         }
       }
 

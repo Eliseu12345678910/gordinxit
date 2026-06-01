@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
-import { getAdminAuth, getAdminDb } from '@/lib/firebase-admin'
+import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
 
 export const runtime = 'nodejs'
 
@@ -40,6 +40,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true, blocked: false })
   } catch (error) {
+    if (isFirebaseAuthTokenError(error)) {
+      return NextResponse.json({ error: 'Sessao invalida.' }, { status: 401 })
+    }
     console.error('Chat session check error:', error)
     return NextResponse.json({ error: 'Nao foi possivel validar a sessao.' }, { status: 500 })
   }

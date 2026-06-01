@@ -1,5 +1,5 @@
-import { ClientPortal } from '@/components/ClientPortal'
+import { redirect } from 'next/navigation'
 
 export default function BaixarXitPage() {
-  return <ClientPortal downloadPage />
+  redirect('/acesso-aqui')
 }
