@@ -5403,12 +5403,12 @@ function PortalStyles() {
         justify-content: center;
         gap: 8px;
         border: 0;
-        border-radius: 3px;
-        background: #65bd4f;
+        border-radius: 24px;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
         color: #ffffff;
         font-size: 16px;
         font-weight: 800;
-        box-shadow: none;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32);
       }
 
       .portal-checkout-submit:disabled {
@@ -5623,14 +5623,14 @@ function PortalStyles() {
       .portal-shell .portal-checkout-page .ffp-buy-button.portal-checkout-submit {
         min-height: 56px !important;
         border: 0 !important;
-        border-radius: 3px !important;
-        background: #65bd4f !important;
+        border-radius: 24px !important;
+        background: linear-gradient(135deg, #22c55e, #16a34a) !important;
         color: #ffffff !important;
         font-size: 16px !important;
         font-weight: 800 !important;
         letter-spacing: 0 !important;
         text-transform: none !important;
-        box-shadow: none !important;
+        box-shadow: 0 18px 40px rgba(22, 163, 74, 0.32) !important;
       }
 
       .portal-shell .portal-checkout-page .portal-checkout-submit.owned,
