@@ -56,26 +56,53 @@ export async function POST(request: NextRequest) {
 
     const payment = chat.payment && typeof chat.payment === 'object' ? chat.payment as Record<string, unknown> : {}
     const currentPaymentId = String(payment.code || payment.platformCode || '').trim()
-    const paymentId = requestedPaymentId || currentPaymentId
+    const paymentIds = [requestedPaymentId, currentPaymentId].filter(Boolean)
+    const recentPayments = await adminDb.collection('mercadoPagoPayments')
+      .where('chatId', '==', chatId)
+      .limit(12)
+      .get()
 
-    if (!paymentId || String(payment.provider || '') !== 'mercado-pago') {
+    recentPayments.docs.forEach((document) => {
+      const data = document.data()
+      if (String(data.accountId || '').toLowerCase() === accountId && !paymentIds.includes(document.id)) {
+        paymentIds.push(document.id)
+      }
+    })
+
+    if (!paymentIds.length || String(payment.provider || '') !== 'mercado-pago') {
       return NextResponse.json({ error: 'Nenhum Pix em aberto para consultar.' }, { status: 404 })
     }
 
-    if (currentPaymentId && requestedPaymentId && requestedPaymentId !== currentPaymentId) {
+    let latestResult: Awaited<ReturnType<typeof syncMercadoPagoPayment>> | null = null
+    for (const paymentId of paymentIds) {
+      const localPayment = await adminDb.collection('mercadoPagoPayments').doc(paymentId).get()
+      const localPaymentData = localPayment.data() || {}
+      if (
+        !localPayment.exists ||
+        String(localPaymentData.chatId || '') !== chatId ||
+        String(localPaymentData.accountId || '').toLowerCase() !== accountId
+      ) {
+        continue
+      }
+
+      const result = await syncMercadoPagoPayment(adminDb, paymentId)
+      latestResult = result
+      if (result.status === 'paid') break
+    }
+
+    if (!latestResult) {
       return NextResponse.json({ error: 'Pix nao pertence a esta conta.' }, { status: 403 })
     }
 
-    const result = await syncMercadoPagoPayment(adminDb, paymentId)
     return NextResponse.json({
       ok: true,
-      matched: result.matched,
-      status: result.status,
-      paid: result.status === 'paid',
-      paymentId,
-      localCode: result.localCode || String(payment.localCode || ''),
-      plan: String(payment.plan || ''),
-      context: String(payment.context || ''),
+      matched: latestResult.matched,
+      status: latestResult.status,
+      paid: latestResult.status === 'paid',
+      paymentId: latestResult.paymentId || currentPaymentId,
+      localCode: latestResult.localCode || String(payment.localCode || ''),
+      plan: latestResult.plan || String(payment.plan || ''),
+      context: latestResult.context || String(payment.context || ''),
     })
   } catch (error) {
     if (isFirebaseAuthTokenError(error)) {

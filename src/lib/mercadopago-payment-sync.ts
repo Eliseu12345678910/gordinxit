@@ -195,5 +195,7 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
     accountId,
     paymentId,
     localCode: getString(stored.localCode),
+    plan,
+    context: getString(stored.context),
   }
 }

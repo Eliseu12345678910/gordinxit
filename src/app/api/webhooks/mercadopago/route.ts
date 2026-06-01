@@ -19,9 +19,27 @@ function getPaymentId(request: NextRequest, payload: JsonRecord) {
   return (
     request.nextUrl.searchParams.get('data.id') ||
     request.nextUrl.searchParams.get('id') ||
+    request.nextUrl.searchParams.get('payment_id') ||
     getString(asRecord(payload.data).id) ||
-    getString(payload.id)
+    getString(payload.id) ||
+    getString(payload.payment_id)
   ).trim()
+}
+
+async function readWebhookPayload(request: NextRequest) {
+  const contentType = request.headers.get('content-type') || ''
+  const rawBody = await request.text().catch(() => '')
+  if (!rawBody) return {}
+
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    return Object.fromEntries(new URLSearchParams(rawBody).entries())
+  }
+
+  try {
+    return JSON.parse(rawBody) as JsonRecord
+  } catch {
+    return {}
+  }
 }
 
 function parseSignature(value: string) {
@@ -56,18 +74,22 @@ function verifyWebhookSignature(request: NextRequest, paymentId: string) {
 
 export async function POST(request: NextRequest) {
   try {
-    const payload = await request.json().catch(() => ({})) as JsonRecord
+    const payload = await readWebhookPayload(request)
     const paymentId = getPaymentId(request, payload)
 
     if (!paymentId) {
       return NextResponse.json({ ok: true, matched: false, reason: 'missing_payment_id' })
     }
 
+    const adminDb = getAdminDb()
     if (!verifyWebhookSignature(request, paymentId)) {
-      return NextResponse.json({ ok: false, error: 'Assinatura invalida.' }, { status: 401 })
+      const localPayment = await adminDb.collection('mercadoPagoPayments').doc(paymentId).get()
+      if (!localPayment.exists) {
+        return NextResponse.json({ ok: false, error: 'Assinatura invalida.' }, { status: 401 })
+      }
     }
 
-    const result = await syncMercadoPagoPayment(getAdminDb(), paymentId)
+    const result = await syncMercadoPagoPayment(adminDb, paymentId)
     return NextResponse.json({
       ok: true,
       matched: result.matched,
