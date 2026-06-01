@@ -607,6 +607,14 @@ function getPurchaseCode(chat: Chat | null) {
   return chat?.payment?.localCode || chat?.payment?.code || chat?.id || ''
 }
 
+function getPendingPixPayment(chat: Chat | null, context: CheckoutContext, plan: PlanType) {
+  const payment = chat?.payment
+  if (!payment || payment.provider !== 'mercado-pago') return null
+  if (payment.status !== 'pending') return null
+  if (payment.plan !== plan || payment.context !== context) return null
+  return payment
+}
+
 function getPaidTarget(chat: Chat | null): PaymentTarget | '' {
   if (chat?.payment?.status !== 'paid') return ''
   return chat.payment.plan || ''
@@ -1306,6 +1314,8 @@ function PlanCheckoutPage({
 }) {
   const isPixCheckout = checkoutMode === 'pix'
   const resellerPlanOwned = isPixCheckout ? isResellerPlanOwned(chat, checkoutContext, plan) : false
+  const pendingPixPayment = isPixCheckout ? getPendingPixPayment(chat, checkoutContext, plan) : null
+  const approvedNotice = isPixCheckout && resellerPlanOwned ? makeApprovalNotice(chat) : null
   const activePlan = getActivePlan(chat)
   const purchaseCode = getPurchaseCode(chat)
   const device = getSelectedDevice(chat, selectedDevice)
@@ -1326,6 +1336,8 @@ function PlanCheckoutPage({
   const [showAllFeatures, setShowAllFeatures] = useState(false)
   const [portalMounted, setPortalMounted] = useState(false)
   const [pixCopyStatus, setPixCopyStatus] = useState('')
+  const [pixModalOpen, setPixModalOpen] = useState(false)
+  const [confirmedModalOpen, setConfirmedModalOpen] = useState(false)
   const visibleDetailsOpen = canOpenDetails && detailsOpen
   const posterPlanDetailItems = getPosterPlanDetailItems(isPluginReady(chat, device), device, activePlan, plan)
   const [priceMain, priceCents = '00'] = splitPriceLabel(option.priceLabel)
@@ -1336,14 +1348,28 @@ function PlanCheckoutPage({
   const checkoutButtonLabel = !canSubmit
     ? 'Link indisponivel'
     : isOwned
-      ? 'Voce possui este plano'
+      ? isPixCheckout
+        ? 'VER PAGAMENTO CONFIRMADO'
+        : 'Voce possui este plano'
       : saving
           ? 'Aguarde...'
-        : isPixCheckout
-          ? 'REALIZAR PAGAMENTO'
-          : 'Continuar ->'
+        : isPixCheckout && pendingPixPayment
+          ? 'GERAR PIX NOVAMENTE'
+          : isPixCheckout
+            ? 'REALIZAR PAGAMENTO'
+            : 'Continuar ->'
 
   const handleCheckoutSubmit = () => {
+    if (isPixCheckout && isOwned) {
+      setConfirmedModalOpen(true)
+      return
+    }
+
+    if (isPixCheckout && pixPayment) {
+      setPixModalOpen(true)
+      return
+    }
+
     if (isPixCheckout) {
       onGeneratePix(plan, checkoutContext)
       return
@@ -1369,6 +1395,10 @@ function PlanCheckoutPage({
   useEffect(() => {
     setPortalMounted(true)
   }, [])
+
+  useEffect(() => {
+    if (pixPayment) setPixModalOpen(true)
+  }, [pixPayment?.paymentId])
 
   useEffect(() => {
     if (!isPixCheckout || isOwned || pixPayment) {
@@ -1557,7 +1587,7 @@ function PlanCheckoutPage({
                     type="button"
                     className={`ffp-buy-button portal-checkout-submit ${isOwned ? 'portal-owned-button owned' : ''}`}
                     onClick={handleCheckoutSubmit}
-                    disabled={saving || isOwned || !canSubmit}
+                    disabled={saving || (!isPixCheckout && isOwned) || !canSubmit}
                   >
                     {checkoutButtonLabel}
                   </button>
@@ -1576,7 +1606,7 @@ function PlanCheckoutPage({
                         type="button"
                         className={`ffp-buy-button portal-checkout-submit portal-fixed-checkout-submit ${checkoutContext === 'internal' ? 'portal-fixed-internal' : 'portal-fixed-external'}`}
                         onClick={handleCheckoutSubmit}
-                        disabled={saving || isOwned || !canSubmit}
+                        disabled={saving || (!isPixCheckout && isOwned) || !canSubmit}
                       >
                         {checkoutButtonLabel}
                       </button>
@@ -1633,9 +1663,12 @@ function PlanCheckoutPage({
         </div>
       )}
 
-      {isPixCheckout && pixPayment && (
-        <div className="portal-modal-backdrop portal-pix-backdrop" role="presentation">
-          <section className="portal-pix-panel" role="dialog" aria-modal="true" aria-label="Pix gerado">
+      {isPixCheckout && pixPayment && pixModalOpen && (
+        <div className="portal-modal-backdrop portal-pix-backdrop" role="presentation" onClick={() => setPixModalOpen(false)}>
+          <section className="portal-pix-panel" role="dialog" aria-modal="true" aria-label="Pix gerado" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="portal-pix-close" onClick={() => setPixModalOpen(false)} aria-label="Fechar Pix">
+              X
+            </button>
             <span>Pix {pixPayment.status}</span>
             <h2>{pixPayment.priceLabel}</h2>
             {pixPayment.qrCodeBase64 && (
@@ -1651,6 +1684,10 @@ function PlanCheckoutPage({
             <p>Depois de pagar, aguarde a confirmacao automatica nesta tela.</p>
           </section>
         </div>
+      )}
+
+      {confirmedModalOpen && approvedNotice && (
+        <ApprovalModal notice={approvedNotice} onClose={() => setConfirmedModalOpen(false)} />
       )}
     </div>
   )
@@ -3800,6 +3837,7 @@ function PortalStyles() {
 
       .portal-approved-modal,
       .portal-pix-panel {
+        position: relative;
         width: min(100%, 440px);
         max-height: min(92vh, 760px);
         overflow-y: auto;
@@ -3810,6 +3848,21 @@ function PortalStyles() {
         background: #ffffff;
         padding: 18px;
         box-shadow: 0 28px 80px rgba(0, 0, 0, 0.28);
+      }
+
+      .portal-pix-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 34px;
+        height: 34px;
+        border: 1px solid #dbe4ef;
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #0f172a;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 950;
       }
 
       .portal-download-modal {
@@ -3893,6 +3946,16 @@ function PortalStyles() {
         font-weight: 900;
         text-decoration: none;
         cursor: pointer;
+      }
+
+      .portal-pix-panel .portal-pix-close {
+        min-height: 0;
+        padding: 0;
+        border: 1px solid #dbe4ef;
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #0f172a;
+        box-shadow: none;
       }
 
       .portal-pix-panel button.copied {

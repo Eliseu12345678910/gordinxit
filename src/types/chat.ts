@@ -113,6 +113,10 @@ export type Chat = {
     code?: string
     platformCode?: string
     localCode?: string
+    externalReference?: string
+    context?: ResellerAccessType
+    amountCents?: number
+    currency?: string
     eventId?: string
     saleAmount?: number | null
     customer?: {
