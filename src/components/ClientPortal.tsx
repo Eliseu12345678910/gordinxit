@@ -1370,7 +1370,7 @@ function PlanCheckoutPage({
       : saving
           ? 'Aguarde...'
         : isPixCheckout && pendingPixPayment
-          ? 'GERAR PIX NOVAMENTE'
+          ? 'VER PIX GERADO'
           : isPixCheckout
             ? 'REALIZAR PAGAMENTO'
             : 'Continuar ->'

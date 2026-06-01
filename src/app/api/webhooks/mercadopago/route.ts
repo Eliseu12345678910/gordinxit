@@ -82,11 +82,13 @@ export async function POST(request: NextRequest) {
     }
 
     const adminDb = getAdminDb()
+    const localPayment = await adminDb.collection('mercadoPagoPayments').doc(paymentId).get()
+    if (!localPayment.exists) {
+      return NextResponse.json({ ok: true, matched: false, reason: 'local_payment_not_found' })
+    }
+
     if (!verifyWebhookSignature(request, paymentId)) {
-      const localPayment = await adminDb.collection('mercadoPagoPayments').doc(paymentId).get()
-      if (!localPayment.exists) {
-        return NextResponse.json({ ok: false, error: 'Assinatura invalida.' }, { status: 401 })
-      }
+      return NextResponse.json({ ok: false, error: 'Assinatura invalida.' }, { status: 401 })
     }
 
     const result = await syncMercadoPagoPayment(adminDb, paymentId)

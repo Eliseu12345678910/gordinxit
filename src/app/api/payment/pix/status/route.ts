@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    if (!paymentIds.length || String(payment.provider || '') !== 'mercado-pago') {
+    if (!paymentIds.length) {
       return NextResponse.json({ error: 'Nenhum Pix em aberto para consultar.' }, { status: 404 })
     }
 

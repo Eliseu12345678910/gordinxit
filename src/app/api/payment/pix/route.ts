@@ -3,6 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAccountAccessBlocked } from '@/lib/account-block'
 import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
+import { fetchMercadoPagoPayment, mercadoPagoPaymentStatus } from '@/lib/mercadopago-payment-sync'
 import { isPlanType } from '@/lib/payment-catalog'
 import { loadServerResellerPlanCatalog } from '@/lib/payment-catalog-server'
 import type { PlanType } from '@/types/chat'
@@ -50,6 +51,15 @@ function getNestedString(source: JsonRecord, ...path: string[]) {
   let current: unknown = source
   for (const part of path) current = jsonRecord(current)[part]
   return getString(current)
+}
+
+function getPixTransactionData(payment: JsonRecord) {
+  const transactionData = jsonRecord(jsonRecord(payment.point_of_interaction).transaction_data)
+  return {
+    qrCode: getString(transactionData.qr_code),
+    qrCodeBase64: getString(transactionData.qr_code_base64),
+    ticketUrl: getNestedString(payment, 'transaction_details', 'external_resource_url'),
+  }
 }
 
 function makeLocalPixCode(chatId: string, accountId: string, plan: PlanType, context: PixContext) {
@@ -156,6 +166,112 @@ export async function POST(request: NextRequest) {
     const catalog = await loadServerResellerPlanCatalog(adminDb)
     const selectedPlan = catalog[context][plan]
     const amount = selectedPlan.amountCents / 100
+    const existingPayments = await adminDb.collection('mercadoPagoPayments')
+      .where('chatId', '==', chatId)
+      .limit(12)
+      .get()
+
+    for (const document of existingPayments.docs) {
+      const existing = document.data()
+      if (
+        String(existing.accountId || '').toLowerCase() !== accountId ||
+        existing.context !== context ||
+        existing.plan !== plan
+      ) {
+        continue
+      }
+
+      let existingStatus = getString(existing.status) || 'pending'
+      let existingQrCode = getString(existing.qrCode)
+      let existingQrCodeBase64 = getString(existing.qrCodeBase64)
+      let existingTicketUrl = getString(existing.ticketUrl) || getString(existing.link)
+
+      try {
+        const mercadoPagoPayment = await fetchMercadoPagoPayment(document.id)
+        existingStatus = mercadoPagoPaymentStatus(mercadoPagoPayment)
+        const pixData = getPixTransactionData(mercadoPagoPayment)
+        existingQrCode = existingQrCode || pixData.qrCode
+        existingQrCodeBase64 = existingQrCodeBase64 || pixData.qrCodeBase64
+        existingTicketUrl = existingTicketUrl || pixData.ticketUrl
+      } catch {
+        // If Mercado Pago is temporarily unavailable, reuse the local QR when it exists.
+      }
+
+      if (existingStatus !== 'pending' || !existingQrCode) continue
+
+      const paymentRecord = {
+        provider: 'mercado-pago',
+        status: 'pending',
+        code: document.id,
+        platformCode: document.id,
+        localCode: getString(existing.localCode),
+        externalReference: getString(existing.externalReference),
+        context,
+        plan,
+        label: `Gerar PIX ${selectedPlan.label}`,
+        saleAmount: amount,
+        amountCents: selectedPlan.amountCents,
+        currency: 'BRL',
+        updatedAt: FieldValue.serverTimestamp(),
+      }
+
+      await Promise.all([
+        adminDb.collection('mercadoPagoPayments').doc(document.id).set({
+          ...paymentRecord,
+          chatId,
+          accountId,
+          qrCode: existingQrCode,
+          qrCodeBase64: existingQrCodeBase64,
+          ticketUrl: existingTicketUrl,
+        }, { merge: true }),
+        adminDb.collection('accounts').doc(accountId).set({
+          payment: {
+            ...paymentRecord,
+            link: existingTicketUrl || '',
+          },
+          purchaseIntent: {
+            plan,
+            label: selectedPlan.label,
+            price: selectedPlan.price,
+            priceLabel: selectedPlan.priceLabel,
+            context,
+          },
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true }),
+        chatRef.set({
+          selectedPlan: {
+            plan,
+            label: selectedPlan.label,
+            price: selectedPlan.price,
+            priceLabel: selectedPlan.priceLabel,
+            context,
+          },
+          payment: {
+            ...paymentRecord,
+            link: existingTicketUrl || '',
+          },
+          funnelStatus: 'waiting_receipt',
+          lastMessage: 'Cliente abriu o Pix pendente novamente.',
+          lastSender: 'client',
+          lastMessageAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true }),
+      ])
+
+      return NextResponse.json({
+        paymentId: document.id,
+        status: 'pending',
+        plan,
+        context,
+        priceLabel: selectedPlan.priceLabel,
+        localCode: getString(existing.localCode),
+        qrCode: existingQrCode,
+        qrCodeBase64: existingQrCodeBase64,
+        ticketUrl: existingTicketUrl,
+        reused: true,
+      })
+    }
+
     const localCode = makeLocalPixCode(chatId, accountId, plan, context)
     const externalReference = `${localCode}_${plan}_${context}`
     const origin = process.env.NEXT_PUBLIC_SITE_URL || request.nextUrl.origin
@@ -171,10 +287,7 @@ export async function POST(request: NextRequest) {
     })
 
     const paymentId = String(payment.id || '')
-    const transactionData = jsonRecord(jsonRecord(payment.point_of_interaction).transaction_data)
-    const qrCode = getString(transactionData.qr_code)
-    const qrCodeBase64 = getString(transactionData.qr_code_base64)
-    const ticketUrl = getNestedString(payment, 'transaction_details', 'external_resource_url')
+    const { qrCode, qrCodeBase64, ticketUrl } = getPixTransactionData(payment)
 
     if (!paymentId || !qrCode) {
       throw new Error('Mercado Pago nao retornou o Pix completo.')
@@ -201,6 +314,9 @@ export async function POST(request: NextRequest) {
         ...paymentRecord,
         chatId,
         accountId,
+        qrCode,
+        qrCodeBase64,
+        ticketUrl,
         createdAt: FieldValue.serverTimestamp(),
       }, { merge: true }),
       adminDb.collection('accounts').doc(accountId).set({
