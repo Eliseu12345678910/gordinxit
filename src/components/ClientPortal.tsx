@@ -4405,6 +4405,10 @@ function PortalStyles() {
         color: #0f172a !important;
       }
 
+      .portal-ffp-page .ffp-price-value b {
+        margin-left: 5px !important;
+      }
+
       .portal-ffp-page .ffp-buy-button {
         background: linear-gradient(135deg, #22c55e, #14b8a6) !important;
         color: #ffffff !important;
@@ -6186,6 +6190,7 @@ function PortalStyles() {
 
       .portal-reseller-checkout .ffp-price-value b {
         font-size: clamp(22px, 5vw, 30px) !important;
+        margin-left: 5px !important;
       }
 
       .portal-reseller-checkout .ffp-price-row small {
