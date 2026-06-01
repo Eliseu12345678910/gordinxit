@@ -112,6 +112,7 @@ export type Chat = {
     label?: string
     code?: string
     platformCode?: string
+    localCode?: string
     eventId?: string
     saleAmount?: number | null
     customer?: {

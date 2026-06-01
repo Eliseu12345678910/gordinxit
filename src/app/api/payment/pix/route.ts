@@ -53,10 +53,11 @@ function getNestedString(source: JsonRecord, ...path: string[]) {
 }
 
 function makeLocalPixCode(chatId: string, accountId: string, plan: PlanType, context: PixContext) {
-  return createHash('sha256')
+  const hash = createHash('sha256')
     .update(`${chatId}:${accountId}:${plan}:${context}:${Date.now()}:${randomUUID()}`)
     .digest('hex')
-    .slice(0, 32)
+    .slice(0, 24)
+  return `gordinxit_id_${hash}`
 }
 
 async function createMercadoPagoPix({
@@ -156,7 +157,7 @@ export async function POST(request: NextRequest) {
     const selectedPlan = catalog[context][plan]
     const amount = selectedPlan.amountCents / 100
     const localCode = makeLocalPixCode(chatId, accountId, plan, context)
-    const externalReference = `gdx_${plan}_${context}_${localCode}`
+    const externalReference = `${localCode}_${plan}_${context}`
     const origin = process.env.NEXT_PUBLIC_SITE_URL || request.nextUrl.origin
     const notificationUrl = `${origin.replace(/\/$/, '')}/api/webhooks/mercadopago`
     const description = `Gordin du Xit ${selectedPlan.label} ${contextLabels[context]}`
@@ -244,6 +245,7 @@ export async function POST(request: NextRequest) {
       plan,
       context,
       priceLabel: selectedPlan.priceLabel,
+      localCode,
       qrCode,
       qrCodeBase64,
       ticketUrl,

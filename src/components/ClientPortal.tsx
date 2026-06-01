@@ -61,6 +61,7 @@ type PixCheckoutResult = {
   paymentId: string
   status: string
   priceLabel: string
+  localCode?: string
   qrCode: string
   qrCodeBase64?: string
   ticketUrl?: string
@@ -70,6 +71,8 @@ type PaymentNotice = {
   title: string
   text: string
   target: PaymentTarget
+  accessType?: ResellerAccessType
+  planLabel?: string
 }
 
 const approvalKeyPrefix = 'chat-atendimento-payment-approved-seen-v1'
@@ -601,7 +604,7 @@ function getResellerAccess(chat: Chat | null, context: CheckoutContext) {
 }
 
 function getPurchaseCode(chat: Chat | null) {
-  return chat?.payment?.code || chat?.id || ''
+  return chat?.payment?.localCode || chat?.payment?.code || chat?.id || ''
 }
 
 function getPaidTarget(chat: Chat | null): PaymentTarget | '' {
@@ -637,16 +640,24 @@ function makeApprovalNotice(chat: Chat | null): PaymentNotice | null {
   const paidTarget = getPaidTarget(chat)
   const code = getPurchaseCode(chat)
   if (!paidTarget || !code) return null
+  const resellerPurchase = chat?.resellerPurchases?.find((purchase) => purchase.paymentCode === chat.payment?.code)
+  const accessType = resellerPurchase?.accessType
   const label =
     paidTarget === 'plugin'
       ? 'Plugin ServiceSync Core'
-      : planOptions.find((plan) => plan.value === paidTarget)?.label || 'Plano'
+      : resellerPurchase?.priceLabel
+        ? `${planOptions.find((plan) => plan.value === paidTarget)?.label || 'Plano'} ${accessType === 'internal' ? 'Internal' : accessType === 'external' ? 'External' : ''}`.trim()
+        : planOptions.find((plan) => plan.value === paidTarget)?.label || 'Plano'
 
   return {
     code,
     target: paidTarget,
+    accessType,
+    planLabel: label,
     title: 'Pagamento aprovado',
-    text: `${label} confirmado. Use o codigo abaixo se precisar identificar essa compra no Gordin du Xit ou no admin.`,
+    text: accessType
+      ? `${label} confirmado. Copie o ID da compra e envie no WhatsApp para receber a key do seu plano.`
+      : `${label} confirmado. Use o codigo abaixo se precisar identificar essa compra no Gordin du Xit ou no admin.`,
   }
 }
 
@@ -1314,6 +1325,7 @@ function PlanCheckoutPage({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [showAllFeatures, setShowAllFeatures] = useState(false)
   const [portalMounted, setPortalMounted] = useState(false)
+  const [pixCopyStatus, setPixCopyStatus] = useState('')
   const visibleDetailsOpen = canOpenDetails && detailsOpen
   const posterPlanDetailItems = getPosterPlanDetailItems(isPluginReady(chat, device), device, activePlan, plan)
   const [priceMain, priceCents = '00'] = splitPriceLabel(option.priceLabel)
@@ -1341,6 +1353,17 @@ function PlanCheckoutPage({
 
   const handleScrollToCheckout = () => {
     checkoutButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  async function handleCopyPix() {
+    if (!pixPayment?.qrCode) return
+    try {
+      await navigator.clipboard?.writeText(pixPayment.qrCode)
+      setPixCopyStatus('Pix copiado, cole no seu banco')
+    } catch {
+      setPixCopyStatus('Copie o codigo Pix manualmente')
+    }
+    window.setTimeout(() => setPixCopyStatus(''), 2600)
   }
 
   useEffect(() => {
@@ -1569,26 +1592,6 @@ function PlanCheckoutPage({
 
                   {pixError && <p className="portal-checkout-pix-error">{pixError}</p>}
 
-                  {isPixCheckout && pixPayment && (
-                    <section className="portal-pix-panel" aria-label="Pix gerado">
-                      <span>Pix {pixPayment.status}</span>
-                      <strong>{pixPayment.priceLabel}</strong>
-                      {pixPayment.qrCodeBase64 && (
-                        <img src={`data:image/png;base64,${pixPayment.qrCodeBase64}`} alt="QR Code Pix" />
-                      )}
-                      <label>
-                        <small>Copia e cola</small>
-                        <textarea value={pixPayment.qrCode} readOnly rows={4} />
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => navigator.clipboard?.writeText(pixPayment.qrCode).catch(() => undefined)}
-                      >
-                        Copiar PIX
-                      </button>
-                    </section>
-                  )}
-
                   {isOwned && purchaseCode && (
                     <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
                   )}
@@ -1627,6 +1630,26 @@ function PlanCheckoutPage({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {isPixCheckout && pixPayment && (
+        <div className="portal-modal-backdrop portal-pix-backdrop" role="presentation">
+          <section className="portal-pix-panel" role="dialog" aria-modal="true" aria-label="Pix gerado">
+            <span>Pix {pixPayment.status}</span>
+            <h2>{pixPayment.priceLabel}</h2>
+            {pixPayment.qrCodeBase64 && (
+              <img src={`data:image/png;base64,${pixPayment.qrCodeBase64}`} alt="QR Code Pix" />
+            )}
+            <label>
+              <small>Copia e cola</small>
+              <textarea value={pixPayment.qrCode} readOnly rows={4} />
+            </label>
+            <button type="button" onClick={handleCopyPix} className={pixCopyStatus ? 'copied' : ''}>
+              {pixCopyStatus || 'Copiar PIX'}
+            </button>
+            <p>Depois de pagar, aguarde a confirmacao automatica nesta tela.</p>
+          </section>
         </div>
       )}
     </div>
@@ -1926,6 +1949,18 @@ function PluginPage({
 }
 
 function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: () => void }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard?.writeText(notice.code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
   return (
     <div className="portal-modal-backdrop" role="presentation" onClick={onClose}>
       <section
@@ -1942,6 +1977,21 @@ function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: ()
           <small>Codigo da compra</small>
           <strong>{notice.code}</strong>
         </div>
+        {notice.accessType && (
+          <ol>
+            <li>Copie o ID da compra.</li>
+            <li>Envie esse ID no WhatsApp para receber a key do plano {notice.planLabel || ''}.</li>
+            <li>Depois acesse a pagina de download para baixar os arquivos.</li>
+          </ol>
+        )}
+        <button type="button" onClick={copyCode}>
+          {copied ? 'ID copiado' : 'Copiar ID da compra'}
+        </button>
+        {notice.accessType && (
+          <a href="/acesso-pc" onClick={onClose}>
+            Ir para downloads PC
+          </a>
+        )}
         <button type="button" onClick={onClose}>
           Fechar
         </button>
@@ -3748,8 +3798,11 @@ function PortalStyles() {
         backdrop-filter: blur(10px);
       }
 
-      .portal-approved-modal {
+      .portal-approved-modal,
+      .portal-pix-panel {
         width: min(100%, 440px);
+        max-height: min(92vh, 760px);
+        overflow-y: auto;
         display: grid;
         gap: 12px;
         border: 1px solid rgba(226, 232, 240, 0.92);
@@ -3775,6 +3828,7 @@ function PortalStyles() {
       }
 
       .portal-approved-modal h2,
+      .portal-pix-panel h2,
       .portal-download-modal h2 {
         margin: 0;
         color: #0f172a;
@@ -3783,6 +3837,7 @@ function PortalStyles() {
       }
 
       .portal-approved-modal p,
+      .portal-pix-panel p,
       .portal-download-modal p {
         margin: 0;
         color: #475569;
@@ -3811,6 +3866,37 @@ function PortalStyles() {
       .portal-download-info strong {
         color: #052e16;
         overflow-wrap: anywhere;
+      }
+
+      .portal-approved-modal ol {
+        margin: 0;
+        padding-left: 20px;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.45;
+      }
+
+      .portal-approved-modal a,
+      .portal-approved-modal button,
+      .portal-pix-panel button {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #ffffff;
+        padding: 0 12px;
+        font-size: 13px;
+        font-weight: 900;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .portal-pix-panel button.copied {
+        background: linear-gradient(135deg, #0f766e, #14b8a6);
       }
 
       .portal-download-action {
@@ -5757,6 +5843,14 @@ function PortalStyles() {
         cursor: pointer;
       }
 
+      .portal-pix-backdrop .portal-pix-panel {
+        width: min(100%, 440px);
+        margin: 0;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 18px;
+      }
+
       .portal-reseller-checkout .ffp-content {
         padding-top: 24px !important;
         padding-bottom: 22px !important;
@@ -6254,20 +6348,20 @@ function PortalStyles() {
         border-radius: 24px !important;
       }
 
-      .portal-reseller-checkout .portal-pix-panel {
+      .portal-reseller-checkout .ffp-price-card > .portal-pix-panel {
         border-radius: 30px !important;
         padding: 14px !important;
       }
 
-      .portal-reseller-checkout .portal-pix-panel img {
+      .portal-reseller-checkout .ffp-price-card > .portal-pix-panel img {
         border-radius: 22px !important;
       }
 
-      .portal-reseller-checkout .portal-pix-panel textarea {
+      .portal-reseller-checkout .ffp-price-card > .portal-pix-panel textarea {
         border-radius: 20px !important;
       }
 
-      .portal-reseller-checkout .portal-pix-panel button {
+      .portal-reseller-checkout .ffp-price-card > .portal-pix-panel button {
         border-radius: 999px !important;
       }
 
