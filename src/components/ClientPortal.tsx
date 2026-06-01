@@ -66,6 +66,16 @@ type PixCheckoutResult = {
   qrCodeBase64?: string
   ticketUrl?: string
 }
+type PixStatusResult = {
+  ok?: boolean
+  paid?: boolean
+  status?: string
+  paymentId?: string
+  localCode?: string
+  plan?: string
+  context?: string
+  error?: string
+}
 type PaymentNotice = {
   code: string
   title: string
@@ -1292,9 +1302,12 @@ function PlanCheckoutPage({
   planOptionsList,
   pixPayment,
   pixError,
+  pixChecking,
+  pixStatusMessage,
   resellerPlanOptions,
   onBuy,
   onGeneratePix,
+  onCheckPixStatus,
 }: {
   chat: Chat | null
   plan: PlanType
@@ -1309,8 +1322,11 @@ function PlanCheckoutPage({
   resellerPlanOptions: ResellerPlanOptions
   pixPayment: PixCheckoutResult | null
   pixError: string
+  pixChecking: boolean
+  pixStatusMessage: string
   onBuy: (target: PaymentTarget, link: string, label: string) => void
   onGeneratePix: (plan: PlanType, context: CheckoutContext) => void
+  onCheckPixStatus: (paymentId?: string, options?: { silent?: boolean }) => void
 }) {
   const isPixCheckout = checkoutMode === 'pix'
   const resellerPlanOwned = isPixCheckout ? isResellerPlanOwned(chat, checkoutContext, plan) : false
@@ -1367,6 +1383,7 @@ function PlanCheckoutPage({
 
     if (isPixCheckout && pixPayment) {
       setPixModalOpen(true)
+      onCheckPixStatus(pixPayment.paymentId, { silent: true })
       return
     }
 
@@ -1681,6 +1698,10 @@ function PlanCheckoutPage({
             <button type="button" onClick={handleCopyPix} className={pixCopyStatus ? 'copied' : ''}>
               {pixCopyStatus || 'Copiar PIX'}
             </button>
+            <button type="button" onClick={() => onCheckPixStatus(pixPayment.paymentId)} disabled={pixChecking}>
+              {pixChecking ? 'Consultando pagamento...' : 'Ja fiz o pagamento'}
+            </button>
+            {pixStatusMessage && <p className="portal-pix-status-message">{pixStatusMessage}</p>}
             <p>Depois de pagar, aguarde a confirmacao automatica nesta tela.</p>
           </section>
         </div>
@@ -2548,6 +2569,8 @@ export function ClientPortal({
   const [pluginPaymentLink, setPluginPaymentLink] = useState(getPluginPaymentLink('perfect-pay'))
   const [pixPayment, setPixPayment] = useState<PixCheckoutResult | null>(null)
   const [pixError, setPixError] = useState('')
+  const [pixChecking, setPixChecking] = useState(false)
+  const [pixStatusMessage, setPixStatusMessage] = useState('')
   const [approvalNotice, setApprovalNotice] = useState<PaymentNotice | null>(null)
   const [appUpdateSettings, setAppUpdateSettings] = useState<AppUpdateSettings>(defaultAppUpdateSettings)
   const [pcAccessSettings, setPcAccessSettings] = useState<PcAccessSettings>(defaultPcAccessSettings)
@@ -2743,6 +2766,8 @@ export function ClientPortal({
 
       const notice = makeApprovalNotice(chat)
       if (!notice) return
+      setPixPayment(null)
+      setPixStatusMessage('')
       const seenKey = `${approvalKeyPrefix}-${notice.code}-${notice.target}`
       if (getSecureItem(seenKey) !== '1') setApprovalNotice(notice)
     })
@@ -2869,6 +2894,7 @@ export function ClientPortal({
     setSaving(true)
     setError('')
     setPixError('')
+    setPixStatusMessage('')
     setPixPayment(null)
 
     try {
@@ -2907,6 +2933,89 @@ export function ClientPortal({
       setSaving(false)
     }
   }
+
+  async function handleCheckPixStatus(paymentId?: string, options?: { silent?: boolean }) {
+    if (!chatId || !accountId || pixChecking) return
+    const targetPaymentId = paymentId || pixPayment?.paymentId || chatMeta?.payment?.code || chatMeta?.payment?.platformCode
+    if (!targetPaymentId) {
+      if (!options?.silent) setPixStatusMessage('Nenhum Pix encontrado para consultar.')
+      return
+    }
+
+    setPixChecking(true)
+    if (!options?.silent) setPixStatusMessage('Consultando pagamento no Mercado Pago...')
+
+    try {
+      const user = await ensureAnonymousSession()
+      const idToken = await user.getIdToken()
+      const response = await fetch('/api/payment/pix/status', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          idToken,
+          chatId,
+          accountId,
+          paymentId: targetPaymentId,
+        }),
+      })
+      const payload = (await response.json()) as PixStatusResult
+
+      if (!response.ok) throw new Error(payload.error || 'Nao foi possivel consultar o Pix.')
+
+      if (payload.paid) {
+        const targetPlan = planOptions.find((item) => item.value === payload.plan)?.value || checkoutPlan || selectedPlan || 'monthly'
+        const accessType: ResellerAccessType =
+          payload.context === 'internal' || payload.context === 'external' ? payload.context : checkoutContext
+        const planOption = resellerPlanOptions[accessType].find((item) => item.value === targetPlan)
+        const planLabel = `${planOption?.label || gamePlanVisuals[targetPlan].displayName} ${accessType === 'internal' ? 'Internal' : 'External'}`
+        const code = payload.localCode || pixPayment?.localCode || String(targetPaymentId)
+
+        setPixPayment(null)
+        setPixStatusMessage('')
+        setApprovalNotice({
+          code,
+          target: targetPlan,
+          accessType,
+          planLabel,
+          title: 'Pagamento aprovado',
+          text: `${planLabel} confirmado. Copie o ID da compra e envie no WhatsApp para receber a key do seu plano.`,
+        })
+        return
+      }
+
+      if (!options?.silent) {
+        setPixStatusMessage('Ainda nao apareceu como pago. Se voce acabou de pagar, aguarde alguns segundos e tente de novo.')
+      }
+    } catch (statusError) {
+      if (!options?.silent) {
+        setPixStatusMessage(statusError instanceof Error ? statusError.message : 'Nao foi possivel consultar o Pix agora.')
+      }
+    } finally {
+      setPixChecking(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!pixPayment?.paymentId || checkoutMode !== 'pix') return undefined
+
+    let attempts = 0
+    let stopped = false
+    const check = () => {
+      if (stopped || attempts >= 30) return
+      attempts += 1
+      handleCheckPixStatus(pixPayment.paymentId, { silent: true })
+    }
+    const firstCheck = window.setTimeout(check, 5000)
+    const interval = window.setInterval(check, 7000)
+
+    return () => {
+      stopped = true
+      window.clearTimeout(firstCheck)
+      window.clearInterval(interval)
+    }
+  }, [pixPayment?.paymentId, checkoutMode, chatId, accountId])
 
   async function handleOpenDownload() {
     if (!canDownloadXit(currentDevice)) return
@@ -3030,8 +3139,11 @@ export function ClientPortal({
           resellerPlanOptions={resellerPlanOptions}
           pixPayment={pixPayment}
           pixError={pixError}
+          pixChecking={pixChecking}
+          pixStatusMessage={pixStatusMessage}
           onBuy={handleBuy}
           onGeneratePix={handleGeneratePix}
+          onCheckPixStatus={handleCheckPixStatus}
         />
       ) : visibleTab === 'plugins' ? (
         <PluginPage
@@ -3960,6 +4072,21 @@ function PortalStyles() {
 
       .portal-pix-panel button.copied {
         background: linear-gradient(135deg, #0f766e, #14b8a6);
+      }
+
+      .portal-pix-panel button:disabled {
+        cursor: progress;
+        opacity: 0.72;
+      }
+
+      .portal-pix-status-message {
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #1e3a8a !important;
+        padding: 10px 12px;
+        font-size: 12px;
+        font-weight: 850;
       }
 
       .portal-download-action {
