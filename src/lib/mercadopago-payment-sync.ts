@@ -44,6 +44,29 @@ function expirationFor(days: number | null) {
   return Timestamp.fromDate(expiresAt)
 }
 
+function purchaseKey(purchase: JsonRecord) {
+  return getString(purchase.paymentCode) || getString(purchase.platformCode) || getString(purchase.id)
+}
+
+function dedupePurchases(purchases: JsonRecord[]) {
+  const purchasesByCode = new Map<string, JsonRecord>()
+  const uniquePurchases: JsonRecord[] = []
+
+  for (const purchase of purchases) {
+    const key = purchaseKey(purchase)
+    if (!key) {
+      uniquePurchases.push(purchase)
+      continue
+    }
+    purchasesByCode.set(key, purchase)
+  }
+
+  return [
+    ...uniquePurchases,
+    ...purchasesByCode.values(),
+  ]
+}
+
 export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: string) {
   const storedRef = adminDb.collection('mercadoPagoPayments').doc(paymentId)
   const storedSnapshot = await storedRef.get()
@@ -145,8 +168,8 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
       activatedAt,
       expiresAt,
     }
-    const existingPurchases = Array.isArray(chat.resellerPurchases) ? chat.resellerPurchases : []
-    const alreadyRegistered = existingPurchases.some((purchase) => asRecord(purchase).paymentCode === paymentId)
+    const existingPurchases = Array.isArray(chat.resellerPurchases) ? chat.resellerPurchases.map(asRecord) : []
+    const alreadyRegistered = existingPurchases.some((purchase) => purchaseKey(purchase) === paymentId)
 
     chatUpdate.funnelStatus = 'paid'
     chatUpdate.lastMessage = 'Pagamento Pix confirmado pelo Mercado Pago.'
@@ -166,10 +189,10 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
       }
       accountUpdate.resellerAccess = chatUpdate.resellerAccess
 
-      if (!alreadyRegistered) {
-        chatUpdate.resellerPurchases = FieldValue.arrayUnion(resellerPurchaseRecord)
-        accountUpdate.resellerPurchases = FieldValue.arrayUnion(resellerPurchaseRecord)
-      }
+      chatUpdate.resellerPurchases = dedupePurchases(alreadyRegistered
+        ? existingPurchases
+        : [...existingPurchases, resellerPurchaseRecord])
+      accountUpdate.resellerPurchases = chatUpdate.resellerPurchases
     } else {
       chatUpdate.subscription = resellerEntitlement
       accountUpdate.subscription = resellerEntitlement

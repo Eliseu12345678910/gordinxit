@@ -161,12 +161,13 @@ export function planCatalogToOptions(catalog: Record<PlanType, PlanCatalogItem>)
 export function publicPlanCatalog(
   catalog: Record<PlanType, PlanCatalogItem>,
   links: Record<PlanType, string>,
+  includeFallbackLinks = true,
 ): PublicPlanCatalogItem[] {
   return planOrder.map((plan) => {
     const { amountCents, perfectPayLink, ...item } = catalog[plan]
     return {
       ...item,
-      paymentLink: links[plan] || perfectPayLink,
+      paymentLink: links[plan] || (includeFallbackLinks ? perfectPayLink : ''),
     }
   })
 }

@@ -57,6 +57,8 @@ export async function POST(request: NextRequest) {
     const payment = chat.payment && typeof chat.payment === 'object' ? chat.payment as Record<string, unknown> : {}
     const currentPaymentId = String(payment.code || payment.platformCode || '').trim()
     const paymentIds = [requestedPaymentId, currentPaymentId].filter(Boolean)
+    const currentPlan = String(payment.plan || '').trim()
+    const currentContext = String(payment.context || '').trim()
     const recentPayments = await adminDb.collection('mercadoPagoPayments')
       .where('chatId', '==', chatId)
       .limit(12)
@@ -64,7 +66,14 @@ export async function POST(request: NextRequest) {
 
     recentPayments.docs.forEach((document) => {
       const data = document.data()
-      if (String(data.accountId || '').toLowerCase() === accountId && !paymentIds.includes(document.id)) {
+      const sameAccount = String(data.accountId || '').toLowerCase() === accountId
+      const sameCurrentIntent = Boolean(
+        currentPlan &&
+        currentContext &&
+        String(data.plan || '') === currentPlan &&
+        String(data.context || '') === currentContext,
+      )
+      if (sameAccount && sameCurrentIntent && !paymentIds.includes(document.id)) {
         paymentIds.push(document.id)
       }
     })

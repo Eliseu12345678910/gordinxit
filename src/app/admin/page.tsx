@@ -109,8 +109,16 @@ function resellerAccessLabel(type?: ResellerAccessType) {
 
 function getActiveResellerAccess(chat: Chat | null): ResellerAccessType | undefined {
   if (!chat?.resellerAccess) return undefined
-  if (chat.resellerAccess.internal?.status === 'active') return 'internal'
-  if (chat.resellerAccess.external?.status === 'active') return 'external'
+  const internalExpiresAt = chat.resellerAccess.internal?.expiresAt?.toDate?.()
+  const externalExpiresAt = chat.resellerAccess.external?.expiresAt?.toDate?.()
+  if (
+    chat.resellerAccess.internal?.status === 'active' &&
+    (!internalExpiresAt || internalExpiresAt.getTime() > Date.now())
+  ) return 'internal'
+  if (
+    chat.resellerAccess.external?.status === 'active' &&
+    (!externalExpiresAt || externalExpiresAt.getTime() > Date.now())
+  ) return 'external'
   return undefined
 }
 
@@ -129,8 +137,12 @@ function getPcClientSummary(chat: Chat) {
 
 function getActivePlan(chat: Chat | null) {
   if (!chat) return ''
-  if (chat.subscription?.status === 'active' && chat.subscription.plan) return chat.subscription.plan
-  if (chat.payment?.status === 'paid' && chat.payment.plan && chat.payment.plan !== 'plugin') return chat.payment.plan
+  const expiresAt = chat.subscription?.expiresAt?.toDate?.()
+  if (
+    chat.subscription?.status === 'active' &&
+    chat.subscription.plan &&
+    (!expiresAt || expiresAt.getTime() > Date.now())
+  ) return chat.subscription.plan
   return ''
 }
 
@@ -150,14 +162,16 @@ function getPlanExpiry(chat: Chat | null) {
   const expiresAt = chat?.subscription?.expiresAt?.toDate?.()
   if (!chat?.subscription?.plan) return 'Sem plano'
   if (!expiresAt) return 'Permanente'
-  return expiresAt.toLocaleDateString('pt-BR')
+  if (expiresAt.getTime() <= Date.now()) return `Vencido em ${expiresAt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`
+  return expiresAt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function getResellerExpiry(chat: Chat | null, type: ResellerAccessType) {
   const expiresAt = chat?.resellerAccess?.[type]?.expiresAt?.toDate?.()
   if (chat?.resellerAccess?.[type]?.status !== 'active') return 'Sem acesso'
   if (!expiresAt) return 'Permanente'
-  return expiresAt.toLocaleDateString('pt-BR')
+  if (expiresAt.getTime() <= Date.now()) return `Vencido em ${expiresAt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`
+  return expiresAt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function paymentStatusLabel(status?: string) {

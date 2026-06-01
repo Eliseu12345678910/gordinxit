@@ -67,13 +67,13 @@ export async function GET() {
         weekly: '',
         monthly: '',
         lifetime: '',
-      }),
+      }, false),
       external: publicPlanCatalog(resellerCatalog.external, {
         daily: '',
         weekly: '',
         monthly: '',
         lifetime: '',
-      }),
+      }, false),
     },
     pluginLink: getPluginLink(paymentProvider),
   })

@@ -334,15 +334,18 @@ function getPosterPlanDetailItems(
     }
   }
 
-  return [
-    ...items,
-    {
+  if (selectedDevice === 'android') {
+    items.push({
       label: pluginReady ? 'Plugin ativo' : 'Plugin nao incluso',
       detail: pluginReady
         ? 'Liberado nesta conta.'
         : 'Necessario para o xit funcionar. Verifique com vendedor antes da compra.',
       tone: pluginReady ? 'positive' : 'negative',
-    },
+    })
+  }
+
+  return [
+    ...items,
     { label: 'Tutorial de instalacao e uso' },
     { label: 'Recebimento automatico apos mandar comprovante' },
     { label: 'Mais controle para jogar apostado' },
@@ -596,9 +599,6 @@ function isSubscriptionActive(chat: Chat | null) {
 
 function getActivePlan(chat: Chat | null): PlanType | '' {
   if (isSubscriptionActive(chat) && chat?.subscription?.plan) return chat.subscription.plan
-  if (chat?.payment?.status === 'paid' && chat.payment.plan && chat.payment.plan !== 'plugin') {
-    return chat.payment.plan
-  }
   return ''
 }
 
@@ -616,7 +616,20 @@ function isResellerPurchaseActive(purchase: NonNullable<Chat['resellerPurchases'
 }
 
 function getResellerPurchases(chat: Chat | null, context: CheckoutContext) {
-  return (chat?.resellerPurchases || [])
+  const purchasesByCode = new Map<string, NonNullable<Chat['resellerPurchases']>[number]>()
+
+  for (const purchase of chat?.resellerPurchases || []) {
+    if (purchase.accessType !== context || purchase.status !== 'paid') continue
+    const key = purchase.paymentCode || purchase.platformCode || purchase.id || `${purchase.accessType}-${purchase.plan}`
+    const current = purchasesByCode.get(key)
+    const purchaseTime = purchase.activatedAt?.toMillis?.() || 0
+    const currentTime = current?.activatedAt?.toMillis?.() || 0
+    if (!current || purchaseTime >= currentTime) {
+      purchasesByCode.set(key, purchase)
+    }
+  }
+
+  return Array.from(purchasesByCode.values())
     .filter((purchase) => purchase.accessType === context && purchase.status === 'paid')
     .sort((first, second) => {
       const firstTime = first.activatedAt?.toMillis?.() || 0
@@ -638,6 +651,56 @@ function getResellerAccess(chat: Chat | null, context: CheckoutContext) {
 
 function getPurchaseCode(chat: Chat | null) {
   return chat?.payment?.localCode || chat?.payment?.code || chat?.id || ''
+}
+
+function PurchaseCodeCard({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false)
+
+  function copyWithTextarea() {
+    const textarea = document.createElement('textarea')
+    textarea.value = code
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const success = document.execCommand('copy')
+    textarea.remove()
+    return success
+  }
+
+  async function copyPurchaseCode() {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code)
+      } else {
+        copyWithTextarea()
+      }
+    } catch {
+      copyWithTextarea()
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <div className="portal-purchase-code-card">
+      <div className="portal-purchase-code-copy">
+        <span>Codigo da compra</span>
+        <strong>{code}</strong>
+      </div>
+      <button
+        type="button"
+        className="portal-purchase-copy-button"
+        onClick={copyPurchaseCode}
+        aria-label="Copiar codigo da compra"
+        title="Copiar codigo da compra"
+      >
+        <i aria-hidden="true" />
+      </button>
+      <em aria-live="polite">{copied ? 'Copiado' : ''}</em>
+    </div>
+  )
 }
 
 function getPendingPixPayment(chat: Chat | null, context: CheckoutContext, plan: PlanType) {
@@ -666,7 +729,7 @@ function getSelectedDevice(chat: Chat | null, selectedDevice: DeviceType | '') {
 }
 
 function getDownloadButtonLabel(device: DeviceType | '') {
-  if (device === 'android' || device === 'emulator') {
+  if (device === 'android') {
     return 'ABAIXAR XIT'
   }
 
@@ -674,7 +737,7 @@ function getDownloadButtonLabel(device: DeviceType | '') {
 }
 
 function canDownloadXit(device: DeviceType | '') {
-  return device === 'android' || device === 'emulator'
+  return device === 'android'
 }
 
 function makeApprovalNotice(chat: Chat | null): PaymentNotice | null {
@@ -992,9 +1055,7 @@ function PlansPageOld({
                 {isOwned ? getDownloadButtonLabel(device) : plan.value === 'lifetime' ? 'Pagamento unico' : 'Assinar agora'}
               </button>
 
-              {isOwned && purchaseCode && (
-                <p className="portal-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
-              )}
+              {isOwned && purchaseCode && <PurchaseCodeCard code={purchaseCode} />}
             </article>
           )
         })}
@@ -1244,9 +1305,7 @@ function PlansPage({
                         {!isOwned && <span aria-hidden="true">&gt;</span>}
                       </button>
 
-                      {isOwned && purchaseCode && (
-                        <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
-                      )}
+                      {isOwned && purchaseCode && <PurchaseCodeCard code={purchaseCode} />}
 
                       <div className="ffp-social-stats" aria-label={`Prova social do plano ${option.label}`}>
                         <span className="ffp-stat bought">
@@ -1390,7 +1449,7 @@ function PlanCheckoutPage({
     ? 'Link indisponivel'
     : isOwned
       ? isPixCheckout
-        ? 'VER PAGAMENTO CONFIRMADO'
+        ? 'VER DETALHES DA COMPRA'
         : 'Voce possui este plano'
       : saving
           ? 'Aguarde...'
@@ -1519,7 +1578,14 @@ function PlanCheckoutPage({
                     <span className="ffp-plan-icon" aria-hidden="true" />
                     <div>
                       <span>Plano</span>
-                      <h4>{visual.displayName}</h4>
+                      <h4>
+                        {visual.displayName}
+                        {isPixCheckout && (
+                          <em className="portal-reseller-plan-badge">
+                            {checkoutContext === 'internal' ? 'Internal' : 'External'}
+                          </em>
+                        )}
+                      </h4>
                       <small>{visual.tag}</small>
                     </div>
                   </div>
@@ -1662,9 +1728,7 @@ function PlanCheckoutPage({
                     </p>
                   )}
 
-                  {isOwned && purchaseCode && (
-                    <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
-                  )}
+                  {isOwned && purchaseCode && <PurchaseCodeCard code={purchaseCode} />}
                 </article>
               </div>
             </div>
@@ -1810,9 +1874,7 @@ function PluginPageOld({
           {active ? 'PLUGIN JA ADQUIRIDO' : 'Adquirir plugin'}
         </button>
 
-        {active && purchaseCode && (
-          <p className="portal-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
-        )}
+        {active && purchaseCode && <PurchaseCodeCard code={purchaseCode} />}
       </section>
     </section>
   )
@@ -1988,9 +2050,7 @@ function PluginPage({
                     {!active && <span aria-hidden="true">&gt;</span>}
                   </button>
 
-                  {active && purchaseCode && (
-                    <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
-                  )}
+                  {active && purchaseCode && <PurchaseCodeCard code={purchaseCode} />}
 
                   <div className="portal-plugin-after" aria-label="Resultado apos ativar o plugin">
                     <div className="portal-plugin-after-head">
@@ -2053,14 +2113,30 @@ function PluginPage({
 function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
 
+  function copyWithTextarea() {
+    const textarea = document.createElement('textarea')
+    textarea.value = notice.code
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+
   async function copyCode() {
     try {
-      await navigator.clipboard?.writeText(notice.code)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2200)
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(notice.code)
+      } else {
+        copyWithTextarea()
+      }
     } catch {
-      setCopied(false)
+      copyWithTextarea()
     }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 2200)
   }
 
   return (
@@ -2072,31 +2148,60 @@ function ApprovalModal({ notice, onClose }: { notice: PaymentNotice; onClose: ()
         aria-label="Pagamento aprovado"
         onClick={(event) => event.stopPropagation()}
       >
-        <span>Aprovado</span>
-        <h2>{notice.title}</h2>
-        <p>{notice.text}</p>
-        <div>
-          <small>Codigo da compra</small>
-          <strong>{notice.code}</strong>
+        <button type="button" className="portal-approved-close" onClick={onClose} aria-label="Fechar">
+          X
+        </button>
+
+        <header className="portal-approved-head">
+          <i aria-hidden="true" />
+          <div>
+            <span>Aprovado</span>
+            <h2>{notice.title}</h2>
+            <p>{notice.text}</p>
+          </div>
+        </header>
+
+        <div className="portal-approved-code">
+          <div>
+            <small>Codigo da compra</small>
+            <strong>{notice.code}</strong>
+          </div>
+          <button
+            type="button"
+            className="portal-approved-copy"
+            onClick={copyCode}
+            aria-label="Copiar codigo da compra"
+            title="Copiar codigo da compra"
+          >
+            <i aria-hidden="true" />
+          </button>
         </div>
+        <p className={`portal-approved-copy-status ${copied ? 'visible' : ''}`} aria-live="polite">
+          Codigo copiado
+        </p>
+
         {notice.accessType && (
-          <ol>
-            <li>Copie o ID da compra.</li>
-            <li>Envie esse ID no WhatsApp para receber a key do plano {notice.planLabel || ''}.</li>
-            <li>Depois acesse a pagina de download para baixar os arquivos.</li>
+          <ol className="portal-approved-steps">
+            <li>
+              <strong>Copie o codigo</strong>
+              <span>Use o icone ao lado do ID da compra.</span>
+            </li>
+            <li>
+              <strong>Envie no WhatsApp</strong>
+              <span>Informe o codigo para receber a key do plano {notice.planLabel || ''}.</span>
+            </li>
+            <li>
+              <strong>Acesse os arquivos</strong>
+              <span>Abra a area de downloads PC e baixe o conteudo do seu acesso.</span>
+            </li>
           </ol>
         )}
-        <button type="button" onClick={copyCode}>
-          {copied ? 'ID copiado' : 'Copiar ID da compra'}
-        </button>
+
         {notice.accessType && (
-          <a href="/acesso-pc" onClick={onClose}>
-            Ir para downloads PC
+          <a className="portal-approved-download" href="/acesso-pc" onClick={onClose}>
+            Abrir downloads PC
           </a>
         )}
-        <button type="button" onClick={onClose}>
-          Fechar
-        </button>
       </section>
     </div>
   )
@@ -2338,29 +2443,63 @@ function PcAccessPage({
       links: entry.download.fixErrors || [],
     }))
     .filter((entry) => entry.links.length > 0)
+  const hasPcResources = tutorialGroups.length > 0 || fixErrorGroups.length > 0
+  const [pcAccessView, setPcAccessView] = useState<'downloads' | 'resources'>('downloads')
 
   return (
     <div className="plan-fullscreen ffp-modal portal-ffp-page portal-download-page" role="region" aria-label="Acesso PC">
       <main className="ffp-page">
         <section className="ffp-poster">
           <div className="ffp-content portal-download-content">
+            {hasPcResources && (
+              <nav className="portal-pc-view-switch" aria-label="Acesso PC">
+                <button
+                  type="button"
+                  className={pcAccessView === 'downloads' ? 'active' : ''}
+                  onClick={() => setPcAccessView('downloads')}
+                >
+                  Downloads
+                </button>
+                <button
+                  type="button"
+                  className={pcAccessView === 'resources' ? 'active' : ''}
+                  onClick={() => setPcAccessView('resources')}
+                >
+                  + Tutoriais e Fix Errors
+                </button>
+              </nav>
+            )}
+
             <section className="ffp-hero portal-download-hero">
               <span className="ffp-badge">Acesso PC</span>
-              <h3><span>acesso</span> <strong>pc</strong></h3>
-              <p>Downloads liberados apos confirmacao do Pix. A key final e enviada pelo atendimento no WhatsApp.</p>
+              <h3 className="portal-pc-access-title">
+                <span>Acesso para abaixar o painel para</span> <strong>PC</strong>
+              </h3>
             </section>
 
+            {pcAccessView === 'downloads' && (
             <div className="portal-download-grid">
-              {entries.map(({ type, label }) => {
-                const access = getResellerAccess(chat, type)
+              {activeEntries.length === 0 && (
+                <section className="portal-download-main-card portal-pc-empty-card">
+                  <div className="portal-download-product">
+                    <span>PC</span>
+                    <div>
+                      <small>Acesso PC</small>
+                      <strong>Nenhum download liberado</strong>
+                      <p>Assim que uma compra Internal ou External for confirmada, os arquivos aparecem aqui.</p>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {activeEntries.map(({ type, label, access, download }) => {
                 const purchases = getResellerPurchases(chat, type)
-                const download = settings[type]
                 const files = download.files?.length
                   ? download.files
                   : download.downloadUrl
                     ? [{ label: download.title || label, url: download.downloadUrl }]
                     : []
-                const available = Boolean(access && download.enabled && files.length > 0)
+                const available = Boolean(download.enabled && files.length > 0)
 
                 return (
                   <section key={type} className="portal-download-main-card">
@@ -2375,6 +2514,9 @@ function PcAccessPage({
 
                     {available ? (
                       <div className="portal-pc-download-files">
+                        <p className="portal-pc-required-download">
+                          Obrigatorio fazer o download de {download.title || label}
+                        </p>
                         {files.map((file) => (
                           <a
                             key={`${type}-${file.label}-${file.url}`}
@@ -2386,35 +2528,12 @@ function PcAccessPage({
                             Baixar {file.label}
                           </a>
                         ))}
-                        {download.tutorialUrl && (
-                          <a
-                            className="portal-download-secondary"
-                            href={download.tutorialUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            Ver tutorial
-                          </a>
-                        )}
                       </div>
                     ) : (
                       <p className="portal-download-unavailable">
-                        {!access
-                          ? `Compre e confirme o ${label} para liberar este download.`
-                          : 'Download ainda nao cadastrado no painel admin.'}
+                        Download ainda nao cadastrado no painel admin.
                       </p>
                     )}
-
-                    <div className="portal-download-status-grid portal-download-status-compact">
-                      <span>
-                        <small>Status</small>
-                        <b>{access ? 'Compra confirmada' : 'Pendente'}</b>
-                      </span>
-                      <span>
-                        <small>Versao</small>
-                        <b>{download.versionName || '1.0'}</b>
-                      </span>
-                    </div>
 
                     {purchases.length > 0 && (
                       <div className="portal-pc-purchase-list">
@@ -2428,7 +2547,7 @@ function PcAccessPage({
                               <b>{planLabel}</b>
                               <em>{purchase.priceLabel || ''}</em>
                               <strong>{purchase.paymentCode || purchase.platformCode || purchase.id}</strong>
-                              <i>{expiresAt ? `Expira ${expiresAt.toLocaleDateString('pt-BR')}` : 'Lifetime'}</i>
+                              <i>{expiresAt ? `Expira ${expiresAt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}` : 'Lifetime'}</i>
                             </span>
                           )
                         })}
@@ -2436,12 +2555,24 @@ function PcAccessPage({
                     )}
 
                     {download.notes && <p className="portal-download-unavailable">{download.notes}</p>}
+                    {download.tutorialUrl && (
+                      <a
+                        className="portal-download-secondary portal-youtube-tutorial"
+                        href={download.tutorialUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <i aria-hidden="true" />
+                        Ver tutorial de como instalar e usar
+                      </a>
+                    )}
                   </section>
                 )
               })}
             </div>
+            )}
 
-            {tutorialGroups.length > 0 && (
+            {pcAccessView === 'resources' && tutorialGroups.length > 0 && (
               <section className="portal-pc-resource-section" aria-label="Tutoriais">
                 <div className="portal-pc-resource-head">
                   <span>Tutoriais</span>
@@ -2470,7 +2601,7 @@ function PcAccessPage({
               </section>
             )}
 
-            {fixErrorGroups.length > 0 && (
+            {pcAccessView === 'resources' && fixErrorGroups.length > 0 && (
               <section className="portal-pc-resource-section" aria-label="Fix erros">
                 <div className="portal-pc-resource-head">
                   <span>Fix errors</span>
@@ -2622,7 +2753,7 @@ export function ClientPortal({
   const [authPreview, setAuthPreview] = useState(previewAuth)
   const activePlan = getActivePlan(chatMeta)
   const currentDevice = getSelectedDevice(chatMeta, selectedDevice)
-  const canOpenPlugin = Boolean(activePlan && (currentDevice === 'android' || currentDevice === 'emulator'))
+  const canOpenPlugin = Boolean(activePlan && currentDevice === 'android')
   const visibleTab = initialTab === 'plugins' && canOpenPlugin ? 'plugins' : 'plans'
   const expectedAuthReturnPath = checkoutPlan
     ? checkoutMode === 'pix'
@@ -3888,6 +4019,117 @@ function PortalStyles() {
         overflow-wrap: anywhere;
       }
 
+      .portal-purchase-code-card {
+        position: relative;
+        z-index: 4;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 42px;
+        align-items: center;
+        gap: 12px;
+        width: calc(100% - 28px);
+        margin: 18px auto 24px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 18px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+        padding: 12px 12px 12px 14px;
+        box-shadow:
+          0 14px 34px rgba(15, 23, 42, 0.08),
+          inset 0 1px 0 rgba(255, 255, 255, 0.86);
+      }
+
+      .portal-purchase-code-copy {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+      }
+
+      .portal-purchase-code-copy span {
+        color: #64748b;
+        font-size: 10px;
+        font-weight: 950;
+        letter-spacing: 0;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .portal-purchase-code-copy strong {
+        min-width: 0;
+        color: #0f172a;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+        font-size: clamp(11px, 2.8vw, 13px);
+        font-weight: 850;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-purchase-copy-button {
+        width: 42px;
+        height: 42px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid rgba(15, 23, 42, 0.1);
+        border-radius: 14px;
+        background: #0f172a;
+        color: #ffffff;
+        cursor: pointer;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+        transition:
+          transform 0.16s ease,
+          filter 0.16s ease,
+          box-shadow 0.16s ease;
+      }
+
+      .portal-purchase-copy-button:hover {
+        filter: brightness(1.08);
+        box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+      }
+
+      .portal-purchase-copy-button:active {
+        transform: translateY(1px) scale(0.98);
+      }
+
+      .portal-purchase-copy-button i {
+        position: relative;
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+
+      .portal-purchase-copy-button i::before,
+      .portal-purchase-copy-button i::after {
+        content: '';
+        position: absolute;
+        width: 11px;
+        height: 13px;
+        border: 2px solid currentColor;
+        border-radius: 4px;
+      }
+
+      .portal-purchase-copy-button i::before {
+        right: 1px;
+        top: 1px;
+        opacity: 0.72;
+      }
+
+      .portal-purchase-copy-button i::after {
+        left: 1px;
+        bottom: 1px;
+        background: #0f172a;
+      }
+
+      .portal-purchase-code-card em {
+        min-height: 16px;
+        grid-column: 1 / -1;
+        margin: -4px 2px 0;
+        color: #15803d;
+        font-size: 11px;
+        font-style: normal;
+        font-weight: 900;
+        line-height: 1;
+        text-align: right;
+      }
+
       .portal-provider-note {
         margin: 14px 0 0;
         color: #64748b;
@@ -4202,6 +4444,248 @@ function PortalStyles() {
       .portal-pix-panel button:disabled {
         cursor: progress;
         opacity: 0.72;
+      }
+
+      .portal-approved-modal {
+        width: min(100%, 470px);
+        gap: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 14% 0%, rgba(34, 197, 94, 0.13), transparent 12rem),
+          linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        padding: 18px;
+        box-shadow: 0 32px 90px rgba(15, 23, 42, 0.34);
+      }
+
+      .portal-approved-close {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 34px;
+        min-height: 34px !important;
+        height: 34px;
+        border: 1px solid rgba(148, 163, 184, 0.26) !important;
+        border-radius: 999px !important;
+        background: #ffffff !important;
+        color: #334155 !important;
+        padding: 0 !important;
+        font-size: 12px !important;
+        font-weight: 950 !important;
+        box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08) !important;
+      }
+
+      .portal-approved-head {
+        display: grid;
+        grid-template-columns: 48px minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+        padding-right: 32px;
+      }
+
+      .portal-approved-head > i {
+        width: 48px;
+        height: 48px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #22c55e, #0f766e);
+        box-shadow: 0 14px 30px rgba(34, 197, 94, 0.24);
+      }
+
+      .portal-approved-head > i::before {
+        content: '';
+        width: 17px;
+        height: 9px;
+        border-left: 3px solid #ffffff;
+        border-bottom: 3px solid #ffffff;
+        transform: rotate(-45deg) translateY(-1px);
+      }
+
+      .portal-approved-head div {
+        display: grid;
+        gap: 6px;
+        border: 0;
+        background: transparent;
+        padding: 0;
+      }
+
+      .portal-approved-head span {
+        color: #15803d;
+        font-size: 11px;
+        font-weight: 950;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .portal-approved-modal .portal-approved-head h2 {
+        margin: 0;
+        color: #0f172a;
+        font-size: clamp(28px, 7vw, 36px);
+        line-height: 1;
+      }
+
+      .portal-approved-modal .portal-approved-head p {
+        margin: 0;
+        color: #475569;
+        font-size: 14px;
+        font-weight: 750;
+        line-height: 1.45;
+      }
+
+      .portal-approved-code {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) 42px;
+        gap: 12px !important;
+        align-items: center;
+        border: 1px solid rgba(148, 163, 184, 0.26) !important;
+        border-radius: 16px !important;
+        background: #ffffff !important;
+        padding: 12px !important;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+      }
+
+      .portal-approved-code > div {
+        min-width: 0;
+        display: grid;
+        gap: 5px;
+        border: 0;
+        background: transparent;
+        padding: 0;
+      }
+
+      .portal-approved-code small {
+        color: #64748b;
+        font-size: 10px;
+        font-weight: 950;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .portal-approved-code strong {
+        color: #0f172a !important;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+        font-size: clamp(12px, 3vw, 13px);
+        font-weight: 850;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .portal-approved-copy {
+        width: 42px;
+        min-height: 42px !important;
+        height: 42px;
+        border: 1px solid rgba(15, 23, 42, 0.1) !important;
+        border-radius: 14px !important;
+        background: #0f172a !important;
+        color: #ffffff !important;
+        padding: 0 !important;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16) !important;
+      }
+
+      .portal-approved-copy i {
+        position: relative;
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+
+      .portal-approved-copy i::before,
+      .portal-approved-copy i::after {
+        content: '';
+        position: absolute;
+        width: 11px;
+        height: 13px;
+        border: 2px solid currentColor;
+        border-radius: 4px;
+      }
+
+      .portal-approved-copy i::before {
+        right: 1px;
+        top: 1px;
+        opacity: 0.72;
+      }
+
+      .portal-approved-copy i::after {
+        left: 1px;
+        bottom: 1px;
+        background: #0f172a;
+      }
+
+      .portal-approved-copy-status {
+        min-height: 16px;
+        margin: -6px 2px 0 !important;
+        color: #15803d !important;
+        font-size: 11px;
+        font-weight: 900;
+        line-height: 1;
+        opacity: 0;
+        text-align: right;
+        transition: opacity 0.16s ease;
+      }
+
+      .portal-approved-copy-status.visible {
+        opacity: 1;
+      }
+
+      .portal-approved-steps {
+        display: grid;
+        gap: 8px;
+        margin: 0 !important;
+        padding: 0 !important;
+        list-style: none;
+        counter-reset: approvedSteps;
+      }
+
+      .portal-approved-steps li {
+        counter-increment: approvedSteps;
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        border: 1px solid rgba(226, 232, 240, 0.92);
+        border-radius: 14px;
+        background: rgba(248, 250, 252, 0.86);
+        padding: 10px;
+      }
+
+      .portal-approved-steps li::before {
+        content: counter(approvedSteps);
+        width: 32px;
+        height: 32px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 999px;
+        background: #dcfce7;
+        color: #166534;
+        font-size: 12px;
+        font-weight: 950;
+      }
+
+      .portal-approved-steps strong {
+        grid-column: 2;
+        color: #0f172a;
+        font-size: 13px;
+        font-weight: 950;
+        line-height: 1.2;
+      }
+
+      .portal-approved-steps span {
+        grid-column: 2;
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 750;
+        line-height: 1.35;
+      }
+
+      .portal-approved-download {
+        min-height: 48px !important;
+        border-radius: 14px !important;
+        background: linear-gradient(135deg, #16a34a, #0f766e) !important;
+        color: #ffffff !important;
+        font-size: 13px !important;
+        font-weight: 950 !important;
+        box-shadow: 0 16px 34px rgba(22, 163, 74, 0.24) !important;
       }
 
       .portal-pix-status-message {
@@ -6226,10 +6710,31 @@ function PortalStyles() {
       }
 
       .portal-reseller-checkout .ffp-plan-head h4 {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        gap: 8px 10px !important;
         margin-top: 2px !important;
         font-size: clamp(38px, 8vw, 58px) !important;
         line-height: 0.86 !important;
         letter-spacing: 0 !important;
+      }
+
+      .portal-reseller-plan-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border: 1px solid rgba(22, 163, 74, 0.2);
+        border-radius: 999px;
+        background: #ecfdf5;
+        color: #166534;
+        padding: 5px 9px;
+        font-size: 11px;
+        font-style: normal;
+        font-weight: 950;
+        line-height: 1;
+        text-transform: uppercase;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
       }
 
       .portal-reseller-checkout .ffp-plan-head small {
@@ -6876,9 +7381,18 @@ function PortalStyles() {
         font-size: clamp(40px, 10vw, 72px) !important;
         line-height: 1 !important;
         overflow: visible;
+        text-wrap: balance;
         text-shadow:
           0 2px 0 rgba(255, 255, 255, 0.96),
           0 12px 24px rgba(15, 23, 42, 0.24);
+      }
+
+      .portal-shell .portal-download-page .portal-download-hero h3.portal-pc-access-title {
+        max-width: 900px;
+        margin-inline: auto;
+        column-gap: 12px;
+        font-size: clamp(32px, 8vw, 60px) !important;
+        line-height: 0.98 !important;
       }
 
       .portal-shell .portal-download-page .portal-download-hero h3 span,
@@ -6906,6 +7420,37 @@ function PortalStyles() {
         grid-template-columns: 1fr;
         gap: 14px;
         margin: 16px auto 44px;
+      }
+
+      .portal-pc-view-switch {
+        width: min(100%, 720px);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 0 auto 14px;
+        border: 1px solid rgba(20, 184, 166, 0.2);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 6px;
+        box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06);
+      }
+
+      .portal-pc-view-switch button {
+        min-height: 44px;
+        border: 0;
+        border-radius: 13px;
+        background: transparent;
+        color: #0f766e;
+        padding: 0 12px;
+        font-size: 13px;
+        font-weight: 950;
+        cursor: pointer;
+      }
+
+      .portal-pc-view-switch button.active {
+        background: linear-gradient(135deg, #16a34a, #14b8a6);
+        color: #ffffff;
+        box-shadow: 0 12px 24px rgba(20, 184, 166, 0.22);
       }
 
       .portal-download-main-card,
@@ -7043,6 +7588,16 @@ function PortalStyles() {
         margin-top: 14px;
       }
 
+      .portal-pc-required-download {
+        margin: 0;
+        color: #0f766e;
+        font-size: 12px;
+        font-weight: 950;
+        letter-spacing: 0;
+        line-height: 1.2;
+        text-transform: uppercase;
+      }
+
       .portal-pc-download-files .portal-download-primary,
       .portal-pc-download-files .portal-download-secondary {
         margin-top: 0;
@@ -7137,6 +7692,38 @@ function PortalStyles() {
         font-size: 14px;
         font-weight: 950;
         text-decoration: none;
+      }
+
+      .portal-youtube-tutorial {
+        gap: 10px;
+        margin-top: 10px;
+        border: 0;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #ff0033, #dc2626);
+        color: #ffffff;
+        box-shadow: 0 16px 32px rgba(220, 38, 38, 0.24);
+        text-transform: uppercase;
+      }
+
+      .portal-youtube-tutorial i {
+        width: 28px;
+        height: 20px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 7px;
+        background: #ffffff;
+        color: #dc2626;
+        flex: 0 0 auto;
+      }
+
+      .portal-youtube-tutorial i::before {
+        content: '';
+        width: 0;
+        height: 0;
+        border-top: 5px solid transparent;
+        border-bottom: 5px solid transparent;
+        border-left: 8px solid currentColor;
+        transform: translateX(1px);
       }
 
       .portal-pc-purchase-list {
