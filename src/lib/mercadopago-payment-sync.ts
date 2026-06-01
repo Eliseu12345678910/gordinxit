@@ -99,37 +99,51 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
   }
 
   const chat = chatSnapshot.data() || {}
+  const currentPayment = asRecord(chat.payment)
+  const currentPaymentCode = getString(currentPayment.code) || getString(currentPayment.platformCode)
+  const currentContext: ResellerAccessType =
+    stored.context === 'internal' || stored.context === 'external' ? stored.context : 'external'
+  const currentResellerAccess = asRecord(asRecord(chat.resellerAccess)[currentContext])
+  const currentSubscription = asRecord(chat.subscription)
+  const affectsCurrentAccess =
+    currentPaymentCode === paymentId ||
+    getString(currentResellerAccess.paymentCode) === paymentId ||
+    getString(currentSubscription.paymentCode) === paymentId
+  const shouldWritePaymentToAccess = safeStatus === 'paid' || affectsCurrentAccess || !currentPaymentCode
   const accountUpdate: JsonRecord = {
-    payment: paymentUpdate,
     updatedAt: FieldValue.serverTimestamp(),
   }
   const chatUpdate: JsonRecord = {
-    payment: paymentUpdate,
     updatedAt: FieldValue.serverTimestamp(),
   }
 
+  if (shouldWritePaymentToAccess) {
+    accountUpdate.payment = paymentUpdate
+    chatUpdate.payment = paymentUpdate
+  }
+
   if (safeStatus === 'paid') {
-    const context: ResellerAccessType =
-      stored.context === 'internal' || stored.context === 'external' ? stored.context : 'external'
     const catalog = await loadServerResellerPlanCatalog(adminDb)
-    const selectedPlan = catalog[context][plan as PlanType]
+    const selectedPlan = catalog[currentContext][plan as PlanType]
+    const activatedAt = Timestamp.now()
+    const expiresAt = expirationFor(selectedPlan.durationDays)
     const resellerEntitlement = {
       plan,
       status: 'active',
-      activatedAt: FieldValue.serverTimestamp(),
-      expiresAt: expirationFor(selectedPlan.durationDays),
+      activatedAt,
+      expiresAt,
       paymentCode: paymentId,
     }
     const resellerPurchaseRecord = {
       id: paymentId,
       status: 'paid',
       plan,
-      accessType: context,
+      accessType: currentContext,
       priceLabel: selectedPlan.priceLabel,
       paymentCode: paymentId,
       platformCode: paymentId,
-      activatedAt: FieldValue.serverTimestamp(),
-      expiresAt: expirationFor(selectedPlan.durationDays),
+      activatedAt,
+      expiresAt,
     }
     const existingPurchases = Array.isArray(chat.resellerPurchases) ? chat.resellerPurchases : []
     const alreadyRegistered = existingPurchases.some((purchase) => asRecord(purchase).paymentCode === paymentId)
@@ -141,7 +155,7 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
     chatUpdate.payment = {
       ...paymentUpdate,
       status: 'paid',
-      paidAt: asRecord(chat.payment).paidAt || FieldValue.serverTimestamp(),
+      paidAt: currentPayment.paidAt || FieldValue.serverTimestamp(),
     }
     accountUpdate.payment = chatUpdate.payment
 
@@ -162,7 +176,7 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
     }
   }
 
-  if (safeStatus === 'rejected' || safeStatus === 'cancelled') {
+  if ((safeStatus === 'rejected' || safeStatus === 'cancelled') && shouldWritePaymentToAccess) {
     chatUpdate.lastMessage = safeStatus === 'cancelled'
       ? 'Pagamento Pix cancelado pelo Mercado Pago.'
       : 'Pagamento Pix recusado pelo Mercado Pago.'
@@ -170,7 +184,7 @@ export async function syncMercadoPagoPayment(adminDb: Firestore, paymentId: stri
     chatUpdate.lastMessageAt = FieldValue.serverTimestamp()
   }
 
-  if (safeStatus === 'refunded') {
+  if (safeStatus === 'refunded' && shouldWritePaymentToAccess) {
     chatUpdate.funnelStatus = 'deactivated'
     chatUpdate.subscription = {
       ...(asRecord(chat.subscription)),

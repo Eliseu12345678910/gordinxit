@@ -87,9 +87,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, matched: false, reason: 'local_payment_not_found' })
     }
 
-    if (!verifyWebhookSignature(request, paymentId)) {
-      return NextResponse.json({ ok: false, error: 'Assinatura invalida.' }, { status: 401 })
-    }
+    const signatureValid = verifyWebhookSignature(request, paymentId)
 
     const result = await syncMercadoPagoPayment(adminDb, paymentId)
     return NextResponse.json({
@@ -97,6 +95,7 @@ export async function POST(request: NextRequest) {
       matched: result.matched,
       status: result.status,
       reason: result.reason,
+      signatureValid,
     })
   } catch (error) {
     console.error('Mercado Pago webhook error:', error)

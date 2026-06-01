@@ -87,6 +87,29 @@ type PaymentNotice = {
 
 const approvalKeyPrefix = 'chat-atendimento-payment-approved-seen-v1'
 
+function friendlyPixMessage(message?: string) {
+  const normalized = String(message || '').toLowerCase()
+  if (!normalized) return 'Nao conseguimos concluir agora. Tente novamente em alguns instantes.'
+  if (
+    normalized.includes('mercado pago') ||
+    normalized.includes('servidor') ||
+    normalized.includes('seguranca') ||
+    normalized.includes('sessao') ||
+    normalized.includes('token') ||
+    normalized.includes('api') ||
+    normalized.includes('webhook')
+  ) {
+    return 'Nao conseguimos concluir agora. Tente novamente em alguns instantes.'
+  }
+  if (normalized.includes('pix') && normalized.includes('aberto')) {
+    return 'Nao encontramos um Pix aberto para esta compra.'
+  }
+  if (normalized.includes('pagamento')) {
+    return 'Ainda nao encontramos o pagamento. Se acabou de pagar, aguarde alguns segundos e tente de novo.'
+  }
+  return message || 'Nao conseguimos concluir agora. Tente novamente em alguns instantes.'
+}
+
 const deviceLabelMap: Record<DeviceType, string> = {
   android: 'Android',
   ios: 'iOS',
@@ -1361,6 +1384,8 @@ function PlanCheckoutPage({
   const canSubmit = isPixCheckout || Boolean(paymentLink)
   const checkoutButtonRef = useRef<HTMLButtonElement | null>(null)
   const [showFixedCheckoutButton, setShowFixedCheckoutButton] = useState(isPixCheckout)
+  const showPixLoading = isPixCheckout && (saving || pixChecking)
+  const pixLoadingText = pixChecking ? 'Conferindo seu pagamento...' : 'Preparando seu Pix...'
   const checkoutButtonLabel = !canSubmit
     ? 'Link indisponivel'
     : isOwned
@@ -1637,8 +1662,6 @@ function PlanCheckoutPage({
                     </p>
                   )}
 
-                  {pixError && <p className="portal-checkout-pix-error">{pixError}</p>}
-
                   {isOwned && purchaseCode && (
                     <p className="portal-ffp-purchase-code">Codigo da compra: <b>{purchaseCode}</b></p>
                   )}
@@ -1699,7 +1722,7 @@ function PlanCheckoutPage({
               {pixCopyStatus || 'Copiar PIX'}
             </button>
             <button type="button" onClick={() => onCheckPixStatus(pixPayment.paymentId)} disabled={pixChecking}>
-              {pixChecking ? 'Consultando pagamento...' : 'Ja fiz o pagamento'}
+              {pixChecking ? 'Conferindo pagamento...' : 'Ja fiz o pagamento'}
             </button>
             {pixStatusMessage && <p className="portal-pix-status-message">{pixStatusMessage}</p>}
             <p>Depois de pagar, aguarde a confirmacao automatica nesta tela.</p>
@@ -1709,6 +1732,27 @@ function PlanCheckoutPage({
 
       {confirmedModalOpen && approvedNotice && (
         <ApprovalModal notice={approvedNotice} onClose={() => setConfirmedModalOpen(false)} />
+      )}
+
+      {isPixCheckout && portalMounted && pixError && createPortal(
+        <div className="portal-toast-stack" role="status" aria-live="polite">
+          <div className="portal-toast error">
+            <strong>Nao deu certo</strong>
+            <span>{pixError}</span>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {portalMounted && showPixLoading && createPortal(
+        <div className="portal-loading-backdrop" role="status" aria-live="polite">
+          <section className="portal-loading-panel" aria-label={pixLoadingText}>
+            <i aria-hidden="true" />
+            <strong>{pixLoadingText}</strong>
+            <span>Aguarde um instante.</span>
+          </section>
+        </div>,
+        document.body,
       )}
     </div>
   )
@@ -2670,7 +2714,6 @@ export function ClientPortal({
   useEffect(() => {
     async function boot() {
       try {
-        await ensureAnonymousSession()
         const sessionAccess = await checkClientSessionAccess()
         if (sessionAccess.blocked) {
           setBlockedAccess(true)
@@ -2703,7 +2746,7 @@ export function ClientPortal({
         setLoading(false)
       } catch (bootError) {
         console.error('Erro ao iniciar area do cliente:', bootError)
-        setError('Nao foi possivel iniciar a area do cliente.')
+        setError('Nao conseguimos iniciar a pagina agora. Tente novamente em alguns instantes.')
         setLoading(false)
       }
     }
@@ -2920,15 +2963,14 @@ export function ClientPortal({
       const payload = (await response.json()) as PixCheckoutResult & { error?: string }
 
       if (!response.ok || !payload.qrCode) {
-        throw new Error(payload.error || 'Nao foi possivel gerar o Pix.')
+        throw new Error(payload.error || 'Nao conseguimos gerar o Pix agora.')
       }
 
       setPaymentProvider('mercado-pago')
       setPixPayment(payload)
     } catch (pixGenerationError) {
-      const message = pixGenerationError instanceof Error ? pixGenerationError.message : 'Nao foi possivel gerar o Pix.'
+      const message = friendlyPixMessage(pixGenerationError instanceof Error ? pixGenerationError.message : '')
       setPixError(message)
-      setError(message)
     } finally {
       setSaving(false)
     }
@@ -2938,12 +2980,12 @@ export function ClientPortal({
     if (!chatId || !accountId || pixChecking) return
     const targetPaymentId = paymentId || pixPayment?.paymentId || chatMeta?.payment?.code || chatMeta?.payment?.platformCode
     if (!targetPaymentId) {
-      if (!options?.silent) setPixStatusMessage('Nenhum Pix encontrado para consultar.')
+      if (!options?.silent) setPixStatusMessage('Nao encontramos um Pix aberto para esta compra.')
       return
     }
 
     setPixChecking(true)
-    if (!options?.silent) setPixStatusMessage('Consultando pagamento no Mercado Pago...')
+    if (!options?.silent) setPixStatusMessage('Conferindo seu pagamento...')
 
     try {
       const user = await ensureAnonymousSession()
@@ -2962,7 +3004,7 @@ export function ClientPortal({
       })
       const payload = (await response.json()) as PixStatusResult
 
-      if (!response.ok) throw new Error(payload.error || 'Nao foi possivel consultar o Pix.')
+      if (!response.ok) throw new Error(payload.error || 'Nao conseguimos consultar o pagamento agora.')
 
       if (payload.paid) {
         const targetPlan = planOptions.find((item) => item.value === payload.plan)?.value || checkoutPlan || selectedPlan || 'monthly'
@@ -2990,7 +3032,7 @@ export function ClientPortal({
       }
     } catch (statusError) {
       if (!options?.silent) {
-        setPixStatusMessage(statusError instanceof Error ? statusError.message : 'Nao foi possivel consultar o Pix agora.')
+        setPixStatusMessage(friendlyPixMessage(statusError instanceof Error ? statusError.message : ''))
       }
     } finally {
       setPixChecking(false)
@@ -3945,6 +3987,89 @@ function PortalStyles() {
         background: rgba(2, 6, 23, 0.56);
         padding: 16px;
         backdrop-filter: blur(10px);
+      }
+
+      .portal-loading-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 120;
+        display: grid;
+        place-items: center;
+        background: rgba(15, 23, 42, 0.46);
+        padding: 16px;
+        backdrop-filter: blur(12px);
+      }
+
+      .portal-loading-panel {
+        width: min(100%, 320px);
+        display: grid;
+        justify-items: center;
+        gap: 10px;
+        border: 1px solid rgba(226, 232, 240, 0.88);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 22px 18px;
+        text-align: center;
+        box-shadow: 0 28px 70px rgba(2, 6, 23, 0.28);
+      }
+
+      .portal-loading-panel i {
+        width: 42px;
+        height: 42px;
+        border: 4px solid #dcfce7;
+        border-top-color: #16a34a;
+        border-radius: 999px;
+        animation: portal-spin 0.85s linear infinite;
+      }
+
+      .portal-loading-panel strong {
+        color: #0f172a;
+        font-size: 16px;
+        font-weight: 950;
+      }
+
+      .portal-loading-panel span {
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .portal-toast-stack {
+        position: fixed;
+        top: max(16px, env(safe-area-inset-top));
+        left: 50%;
+        z-index: 140;
+        width: min(calc(100% - 24px), 420px);
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+
+      .portal-toast {
+        display: grid;
+        gap: 4px;
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        background: #fef2f2;
+        color: #7f1d1d;
+        padding: 12px 14px;
+        box-shadow: 0 18px 44px rgba(127, 29, 29, 0.2);
+      }
+
+      .portal-toast strong {
+        font-size: 13px;
+        font-weight: 950;
+      }
+
+      .portal-toast span {
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.35;
+      }
+
+      @keyframes portal-spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       .portal-approved-modal,

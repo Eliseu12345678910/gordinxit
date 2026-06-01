@@ -558,7 +558,7 @@ export async function updateChatFunnel({
   const payload = (await response.json()) as { error?: string }
 
   if (!response.ok) {
-    throw new Error(payload.error || 'Nao foi possivel atualizar o atendimento do Gordin du Xit.')
+    throw new Error(payload.error || 'Nao foi possivel atualizar o acesso do Gordin du Xit.')
   }
 }
 

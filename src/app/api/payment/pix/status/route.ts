@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
     const chatSnapshot = await chatRef.get()
 
     if (!chatSnapshot.exists) {
-      return NextResponse.json({ error: 'Atendimento nao encontrado.' }, { status: 404 })
+      return NextResponse.json({ error: 'Login nao encontrado.' }, { status: 404 })
     }
 
     const chat = chatSnapshot.data() || {}

@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
     const chatSnapshot = await chatRef.get()
 
     if (!chatSnapshot.exists) {
-      return NextResponse.json({ error: 'Atendimento nao encontrado.' }, { status: 404 })
+      return NextResponse.json({ error: 'Login nao encontrado.' }, { status: 404 })
     }
 
     const chat = chatSnapshot.data()
@@ -151,7 +151,7 @@ export async function POST(request: NextRequest) {
     const isParticipant = participants.includes(decodedToken.uid)
 
     if (!isAccountOwner && !isParticipant) {
-      return NextResponse.json({ error: 'Voce nao pode gerar Pix para este atendimento.' }, { status: 403 })
+      return NextResponse.json({ error: 'Este login nao pode gerar Pix para esta conta.' }, { status: 403 })
     }
 
     if (isAccountAccessBlocked(chat) || isAccountAccessBlocked(accountSnapshot.data())) {
