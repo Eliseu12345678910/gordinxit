@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebase-admin'
 import { publicPlanCatalog } from '@/lib/payment-catalog'
-import { loadServerPlanCatalog } from '@/lib/payment-catalog-server'
+import { loadServerPlanCatalog, loadServerResellerPlanCatalog } from '@/lib/payment-catalog-server'
 import type { PaymentProvider, PlanType } from '@/types/chat'
 
 export const runtime = 'nodejs'
@@ -48,6 +48,7 @@ export async function GET() {
     adminDb.collection('settings').doc('chat-private').get(),
     loadServerPlanCatalog(adminDb),
   ])
+  const resellerCatalog = await loadServerResellerPlanCatalog(adminDb)
   const paymentProvider = normalizeProvider(settingsSnapshot.data()?.paymentProvider)
   const links = getLinks(paymentProvider, {
     daily: catalog.daily.perfectPayLink,
@@ -60,6 +61,20 @@ export async function GET() {
     paymentProvider,
     links,
     plans: publicPlanCatalog(catalog, links),
+    resellerPlans: {
+      internal: publicPlanCatalog(resellerCatalog.internal, {
+        daily: '',
+        weekly: '',
+        monthly: '',
+        lifetime: '',
+      }),
+      external: publicPlanCatalog(resellerCatalog.external, {
+        daily: '',
+        weekly: '',
+        monthly: '',
+        lifetime: '',
+      }),
+    },
     pluginLink: getPluginLink(paymentProvider),
   })
 }

@@ -56,6 +56,7 @@ type AuthMode = 'login' | 'signup'
 type CheckoutMode = 'external' | 'pix'
 type CheckoutContext = ResellerAccessType
 type PlanOption = typeof planOptions[number]
+type ResellerPlanOptions = Record<CheckoutContext, PlanOption[]>
 type PixCheckoutResult = {
   paymentId: string
   status: string
@@ -492,6 +493,13 @@ function getResellerPlanOption(context: CheckoutContext, plan: PlanType): PlanOp
     priceLabel: item.priceLabel,
     badge: item.badge,
     detail: item.detail,
+  }
+}
+
+function getDefaultResellerPlanOptions(): ResellerPlanOptions {
+  return {
+    internal: (['daily', 'weekly', 'monthly', 'lifetime'] as PlanType[]).map((plan) => getResellerPlanOption('internal', plan)),
+    external: (['daily', 'weekly', 'monthly', 'lifetime'] as PlanType[]).map((plan) => getResellerPlanOption('external', plan)),
   }
 }
 
@@ -1265,6 +1273,7 @@ function PlanCheckoutPage({
   planOptionsList,
   pixPayment,
   pixError,
+  resellerPlanOptions,
   onBuy,
   onGeneratePix,
 }: {
@@ -1278,6 +1287,7 @@ function PlanCheckoutPage({
   saving: boolean
   paymentLinks: Record<PlanType, string>
   planOptionsList: PlanOption[]
+  resellerPlanOptions: ResellerPlanOptions
   pixPayment: PixCheckoutResult | null
   pixError: string
   onBuy: (target: PaymentTarget, link: string, label: string) => void
@@ -1289,7 +1299,7 @@ function PlanCheckoutPage({
   const purchaseCode = getPurchaseCode(chat)
   const device = getSelectedDevice(chat, selectedDevice)
   const option = isPixCheckout
-    ? getResellerPlanOption(checkoutContext, plan)
+    ? resellerPlanOptions[checkoutContext].find((item) => item.value === plan) || getResellerPlanOption(checkoutContext, plan)
     : planOptionsList.find((item) => item.value === plan) || planOptionsList[0] || planOptions[0]
   const visual = gamePlanVisuals[plan]
   const deal = isPixCheckout
@@ -2447,6 +2457,7 @@ export function ClientPortal({
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('perfect-pay')
   const [paymentLinks, setPaymentLinks] = useState<Record<PlanType, string>>(getPaymentLinks('perfect-pay'))
   const [planOptionsList, setPlanOptionsList] = useState<PlanOption[]>(planOptions)
+  const [resellerPlanOptions, setResellerPlanOptions] = useState<ResellerPlanOptions>(() => getDefaultResellerPlanOptions())
   const [pluginPaymentLink, setPluginPaymentLink] = useState(getPluginPaymentLink('perfect-pay'))
   const [pixPayment, setPixPayment] = useState<PixCheckoutResult | null>(null)
   const [pixError, setPixError] = useState('')
@@ -2486,6 +2497,7 @@ export function ClientPortal({
           paymentProvider?: PaymentProvider
           links?: Record<PlanType, string>
           plans?: PublicPlanCatalogItem[]
+          resellerPlans?: Record<CheckoutContext, PublicPlanCatalogItem[]>
           pluginLink?: string
         }
 
@@ -2506,11 +2518,32 @@ export function ClientPortal({
             detail: plan.detail,
           })))
         }
+        if (payload.resellerPlans?.internal?.length && payload.resellerPlans?.external?.length) {
+          setResellerPlanOptions({
+            internal: payload.resellerPlans.internal.map((plan) => ({
+              value: plan.value,
+              label: plan.label,
+              price: plan.price,
+              priceLabel: plan.priceLabel,
+              badge: plan.badge,
+              detail: plan.detail,
+            })),
+            external: payload.resellerPlans.external.map((plan) => ({
+              value: plan.value,
+              label: plan.label,
+              price: plan.price,
+              priceLabel: plan.priceLabel,
+              badge: plan.badge,
+              detail: plan.detail,
+            })),
+          })
+        }
         setPluginPaymentLink(payload.pluginLink || getPluginPaymentLink(provider))
       } catch {
         if (active) {
           setPaymentProvider('perfect-pay')
           setPaymentLinks(getPaymentLinks('perfect-pay'))
+          setResellerPlanOptions(getDefaultResellerPlanOptions())
           setPluginPaymentLink(getPluginPaymentLink('perfect-pay'))
         }
       }
@@ -2907,6 +2940,7 @@ export function ClientPortal({
           saving={saving}
           paymentLinks={paymentLinks}
           planOptionsList={planOptionsList}
+          resellerPlanOptions={resellerPlanOptions}
           pixPayment={pixPayment}
           pixError={pixError}
           onBuy={handleBuy}

@@ -48,8 +48,18 @@ type AppUpdateDraft = {
   changelog: string
 }
 
-type AdminView = 'clients' | 'pc'
+type AdminView = 'clients' | 'pc' | 'prices'
 type PcResourceKey = 'files' | 'tutorials' | 'fixErrors'
+type PriceContext = 'gordin' | 'internal' | 'external'
+
+type PlanPriceDraft = {
+  label: string
+  amountCents: string
+  priceLabel: string
+  normalPriceLabel?: string
+}
+
+type PriceSettingsDraft = Record<PriceContext, Record<PlanType, PlanPriceDraft>>
 
 const deviceLabels = {
   android: 'Android',
@@ -174,6 +184,55 @@ function makeAppUpdateDraft(settings: AppUpdateSettings = defaultAppUpdateSettin
     message: settings.message || defaultAppUpdateSettings.message,
     changelog: settings.changelog || '',
   }
+}
+
+function centsToInput(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return ''
+  return (numeric / 100).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+function inputToCents(value: string) {
+  const clean = value.replace(/\s/g, '').replace(/\./g, '').replace(',', '.')
+  const numeric = Number(clean)
+  if (!Number.isFinite(numeric)) return null
+  return Math.round(numeric * 100)
+}
+
+function makeEmptyPriceDraft(): PriceSettingsDraft {
+  function makeContext() {
+    return planOptions.reduce((result, plan) => {
+      result[plan.value] = {
+        label: plan.label,
+        amountCents: centsToInput(Math.round(plan.price * 100)),
+        priceLabel: plan.priceLabel,
+      }
+      return result
+    }, {} as Record<PlanType, PlanPriceDraft>)
+  }
+
+  return {
+    gordin: makeContext(),
+    internal: makeContext(),
+    external: makeContext(),
+  }
+}
+
+function makePlanPricePayload(draft: PriceSettingsDraft) {
+  return (['gordin', 'internal', 'external'] as PriceContext[]).reduce((contexts, context) => {
+    contexts[context] = planOptions.reduce((plans, plan) => {
+      const amountCents = inputToCents(draft[context][plan.value].amountCents)
+      if (!amountCents || amountCents < 100 || amountCents > 100000) {
+        throw new Error(`Valor invalido em ${priceContextLabels[context].title} / ${plan.label}.`)
+      }
+      plans[plan.value] = { amountCents }
+      return plans
+    }, {} as Record<PlanType, { amountCents: number }>)
+    return contexts
+  }, {} as Record<PriceContext, Record<PlanType, { amountCents: number }>>)
 }
 
 function searchHaystack(chat: Chat) {
@@ -455,6 +514,164 @@ function AppDownloadSettingsPanel() {
           {status && <small className="new-admin-download-status">{status}</small>}
         </form>
       )}
+    </section>
+  )
+}
+
+const priceContextLabels: Record<PriceContext, { title: string; description: string }> = {
+  gordin: {
+    title: 'Gordin du Xit',
+    description: 'Altera o valor visual exibido nas pays normais. A cobranca real continua no checkout externo.',
+  },
+  internal: {
+    title: 'Internal',
+    description: 'Altera o visual e o valor seguro usado pelo Pix interno no servidor.',
+  },
+  external: {
+    title: 'External',
+    description: 'Altera o visual e o valor seguro usado pelo Pix externo no servidor.',
+  },
+}
+
+function PriceSettingsPanel() {
+  const [draft, setDraft] = useState<PriceSettingsDraft>(() => makeEmptyPriceDraft())
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('Carregando valores...')
+
+  useEffect(() => {
+    let active = true
+
+    async function loadPrices() {
+      try {
+        const user = auth.currentUser
+        if (!user || user.isAnonymous) throw new Error('Admin nao autenticado.')
+        const idToken = await user.getIdToken()
+        const response = await fetch('/api/chat/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken, action: 'get_price_settings' }),
+        })
+        const payload = await response.json() as PriceSettingsDraft & { error?: string }
+        if (!response.ok) throw new Error(payload.error || 'Nao foi possivel carregar os valores.')
+        if (!active) return
+
+        setDraft((current) => {
+          const next = makeEmptyPriceDraft()
+          ;(['gordin', 'internal', 'external'] as PriceContext[]).forEach((context) => {
+            planOptions.forEach((plan) => {
+              const raw = payload[context]?.[plan.value]
+              next[context][plan.value] = {
+                label: raw?.label || plan.label,
+                amountCents: centsToInput(raw?.amountCents),
+                priceLabel: raw?.priceLabel || plan.priceLabel,
+                normalPriceLabel: raw?.normalPriceLabel,
+              }
+            })
+          })
+          return next
+        })
+        setStatus('Valores carregados.')
+      } catch (error) {
+        if (active) setStatus(error instanceof Error ? error.message : 'Nao foi possivel carregar os valores.')
+      }
+    }
+
+    loadPrices()
+    return () => {
+      active = false
+    }
+  }, [])
+
+  function updatePrice(context: PriceContext, plan: PlanType, amountCents: string) {
+    setDraft((current) => ({
+      ...current,
+      [context]: {
+        ...current[context],
+        [plan]: {
+          ...current[context][plan],
+          amountCents,
+        },
+      },
+    }))
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+
+    setBusy(true)
+    setStatus('Salvando valores...')
+
+    try {
+      const priceSettings = makePlanPricePayload(draft)
+      const user = auth.currentUser
+      if (!user || user.isAnonymous) throw new Error('Admin nao autenticado.')
+      const idToken = await user.getIdToken()
+      const response = await fetch('/api/chat/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, action: 'set_price_settings', priceSettings }),
+      })
+      const payload = await response.json() as PriceSettingsDraft & { error?: string }
+      if (!response.ok) throw new Error(payload.error || 'Nao foi possivel salvar os valores.')
+      setStatus('Valores salvos.')
+      setDraft((current) => {
+        const next = { ...current }
+        ;(['gordin', 'internal', 'external'] as PriceContext[]).forEach((context) => {
+          next[context] = { ...next[context] }
+          planOptions.forEach((plan) => {
+            const raw = payload[context]?.[plan.value]
+            next[context][plan.value] = {
+              ...next[context][plan.value],
+              amountCents: centsToInput(raw?.amountCents),
+              priceLabel: raw?.priceLabel || next[context][plan.value].priceLabel,
+            }
+          })
+        })
+        return next
+      })
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Nao foi possivel salvar os valores.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="new-admin-prices-page">
+      <header className="new-admin-pc-page-head">
+        <div>
+          <span>Valores</span>
+          <h2>Planos e Pix</h2>
+          <p>Controle o visual dos planos e os valores usados pelo Pix Internal/External.</p>
+        </div>
+        <button type="submit" form="price-settings-form" disabled={busy}>{busy ? 'Salvando...' : 'Salvar valores'}</button>
+      </header>
+
+      <form id="price-settings-form" className="new-admin-prices-form" onSubmit={handleSubmit}>
+        {(['gordin', 'internal', 'external'] as PriceContext[]).map((context) => (
+          <section className="new-admin-price-context" key={context}>
+            <header>
+              <strong>{priceContextLabels[context].title}</strong>
+              <small>{priceContextLabels[context].description}</small>
+            </header>
+            <div>
+              {planOptions.map((plan) => (
+                <label key={`${context}-${plan.value}`}>
+                  <span>{plan.label}</span>
+                  <input
+                    value={draft[context][plan.value].amountCents}
+                    onChange={(event) => updatePrice(context, plan.value, event.target.value)}
+                    inputMode="decimal"
+                    placeholder="1,00"
+                  />
+                </label>
+              ))}
+            </div>
+          </section>
+        ))}
+        {status && <small className="new-admin-download-status">{status}</small>}
+      </form>
     </section>
   )
 }
@@ -1045,6 +1262,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (window.location.hash === '#central-pc') setView('pc')
+    if (window.location.hash === '#valores') setView('prices')
   }, [])
 
   useEffect(() => {
@@ -1093,7 +1311,11 @@ export default function AdminPage() {
 
   function handleViewChange(nextView: AdminView) {
     setView(nextView)
-    window.history.replaceState(null, '', nextView === 'pc' ? '#central-pc' : window.location.pathname)
+    window.history.replaceState(
+      null,
+      '',
+      nextView === 'pc' ? '#central-pc' : nextView === 'prices' ? '#valores' : window.location.pathname,
+    )
   }
 
   async function handleProviderChange(nextProvider: PaymentProvider) {
@@ -1188,6 +1410,14 @@ export default function AdminPage() {
             <span>Central PC</span>
             <strong>Downloads e tutoriais</strong>
           </button>
+          <button
+            type="button"
+            className={view === 'prices' ? 'active' : ''}
+            onClick={() => handleViewChange('prices')}
+          >
+            <span>Valores</span>
+            <strong>Planos e Pix</strong>
+          </button>
         </section>
 
         <AppDownloadSettingsPanel />
@@ -1204,7 +1434,9 @@ export default function AdminPage() {
         <ClientList chats={filteredChats} selectedId={selectedChat?.id} onSelect={setSelectedChat} />
       </aside>
 
-      {view === 'pc' ? (
+      {view === 'prices' ? (
+        <PriceSettingsPanel />
+      ) : view === 'pc' ? (
         <PcAccessSettingsPanel />
       ) : (
         <DetailPanel chat={selectedChat} busy={busy} actionStatus={status} onAction={handleAction} />
@@ -1290,7 +1522,8 @@ function AdminStyles() {
       .new-admin-provider button,
       .new-admin-nav button,
       .new-admin-actions button,
-      .new-admin-pc-page button {
+      .new-admin-pc-page button,
+      .new-admin-prices-page button {
         min-height: 40px;
         border-radius: 8px;
         background: #0f172a;
@@ -1320,7 +1553,8 @@ function AdminStyles() {
 
       .new-admin-sidebar,
       .new-admin-detail,
-      .new-admin-pc-page {
+      .new-admin-pc-page,
+      .new-admin-prices-page {
         border: 1px solid #dbe3ee;
         border-radius: 8px;
         background: #ffffff;
@@ -1401,7 +1635,7 @@ function AdminStyles() {
 
       .new-admin-nav {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
 
@@ -1542,7 +1776,8 @@ function AdminStyles() {
         width: auto;
       }
 
-      .new-admin-pc-page {
+      .new-admin-pc-page,
+      .new-admin-prices-page {
         min-height: calc(100vh - 28px);
         display: grid;
         align-content: start;
@@ -1665,6 +1900,66 @@ function AdminStyles() {
         color: #b91c1c;
         border: 1px solid #fecaca;
         padding: 0 10px;
+      }
+
+      .new-admin-prices-form {
+        display: grid;
+        gap: 12px;
+      }
+
+      .new-admin-price-context {
+        display: grid;
+        gap: 10px;
+        border: 1px solid #dbe3ee;
+        border-radius: 8px;
+        background: #f8fafc;
+        padding: 12px;
+      }
+
+      .new-admin-price-context header {
+        display: grid;
+        gap: 4px;
+      }
+
+      .new-admin-price-context header strong {
+        color: #0f172a;
+        font-size: 18px;
+      }
+
+      .new-admin-price-context header small {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .new-admin-price-context > div {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .new-admin-price-context label {
+        display: grid;
+        gap: 5px;
+      }
+
+      .new-admin-price-context label span {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 950;
+        text-transform: uppercase;
+      }
+
+      .new-admin-price-context input {
+        width: 100%;
+        min-height: 42px;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 0 10px;
+        font-weight: 900;
+        outline: none;
       }
 
       .new-admin-search {
@@ -1929,7 +2224,8 @@ function AdminStyles() {
 
         .new-admin-sidebar,
         .new-admin-detail,
-        .new-admin-pc-page {
+        .new-admin-pc-page,
+        .new-admin-prices-page {
           min-height: auto;
         }
 
@@ -1951,6 +2247,10 @@ function AdminStyles() {
         .new-admin-pc-resource-list article button {
           grid-column: 1 / -1;
         }
+
+        .new-admin-price-context > div {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
 
       @media (max-width: 640px) {
@@ -1961,7 +2261,8 @@ function AdminStyles() {
 
         .new-admin-sidebar,
         .new-admin-detail,
-        .new-admin-pc-page {
+        .new-admin-pc-page,
+        .new-admin-prices-page {
           border-radius: 8px;
           padding: 10px;
         }
@@ -2030,6 +2331,11 @@ function AdminStyles() {
 
         .new-admin-pc-page-head button {
           width: 100%;
+        }
+
+        .new-admin-nav,
+        .new-admin-price-context > div {
+          grid-template-columns: 1fr;
         }
 
         .new-admin-action-section summary {

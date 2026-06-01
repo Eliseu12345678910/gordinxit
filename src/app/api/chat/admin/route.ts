@@ -2,8 +2,8 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminUser } from '@/lib/admin-auth'
 import { getAdminAuth, getAdminDb, isFirebaseAuthTokenError } from '@/lib/firebase-admin'
-import { isPlanType } from '@/lib/payment-catalog'
-import { loadServerPlanCatalog } from '@/lib/payment-catalog-server'
+import { formatCurrencyFromCents, isPlanType } from '@/lib/payment-catalog'
+import { loadServerPlanCatalog, loadServerResellerPlanCatalog } from '@/lib/payment-catalog-server'
 
 export const runtime = 'nodejs'
 
@@ -28,8 +28,10 @@ const planLabels: Record<PlanType | 'plugin', string> = {
 
 type PlanType = 'daily' | 'weekly' | 'monthly' | 'lifetime'
 type PaymentProvider = 'perfect-pay' | 'kiwify' | 'mercado-pago'
+type PriceContext = 'gordin' | 'internal' | 'external'
 
 const defaultPaymentProvider: PaymentProvider = 'perfect-pay'
+const planOrder: PlanType[] = ['daily', 'weekly', 'monthly', 'lifetime']
 
 function isPlan(value: string): value is PlanType {
   return isPlanType(value)
@@ -60,6 +62,75 @@ async function getPaymentSettings(adminDb: ReturnType<typeof getAdminDb>) {
   }
 }
 
+async function getPriceSettings(adminDb: ReturnType<typeof getAdminDb>) {
+  const [gordinCatalog, resellerCatalog] = await Promise.all([
+    loadServerPlanCatalog(adminDb),
+    loadServerResellerPlanCatalog(adminDb),
+  ])
+
+  return {
+    gordin: planOrder.reduce((result, plan) => {
+      result[plan] = {
+        label: gordinCatalog[plan].label,
+        amountCents: gordinCatalog[plan].amountCents,
+        priceLabel: gordinCatalog[plan].priceLabel,
+        normalPriceLabel: gordinCatalog[plan].normalPriceLabel,
+        durationDays: gordinCatalog[plan].durationDays,
+        perfectPayLink: gordinCatalog[plan].perfectPayLink,
+      }
+      return result
+    }, {} as Record<PlanType, Record<string, unknown>>),
+    internal: planOrder.reduce((result, plan) => {
+      result[plan] = {
+        label: resellerCatalog.internal[plan].label,
+        amountCents: resellerCatalog.internal[plan].amountCents,
+        priceLabel: resellerCatalog.internal[plan].priceLabel,
+        normalPriceLabel: resellerCatalog.internal[plan].normalPriceLabel,
+        durationDays: resellerCatalog.internal[plan].durationDays,
+      }
+      return result
+    }, {} as Record<PlanType, Record<string, unknown>>),
+    external: planOrder.reduce((result, plan) => {
+      result[plan] = {
+        label: resellerCatalog.external[plan].label,
+        amountCents: resellerCatalog.external[plan].amountCents,
+        priceLabel: resellerCatalog.external[plan].priceLabel,
+        normalPriceLabel: resellerCatalog.external[plan].normalPriceLabel,
+        durationDays: resellerCatalog.external[plan].durationDays,
+      }
+      return result
+    }, {} as Record<PlanType, Record<string, unknown>>),
+  }
+}
+
+function cleanAmountCents(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isInteger(numeric) || numeric < 100 || numeric > 100000) return null
+  return numeric
+}
+
+function cleanPlanPrice(raw: unknown) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const data = raw as Record<string, unknown>
+  const amountCents = cleanAmountCents(data.amountCents)
+  if (!amountCents) return null
+
+  return {
+    amountCents,
+    price: amountCents / 100,
+    priceLabel: formatCurrencyFromCents(amountCents),
+  }
+}
+
+function cleanPriceContext(raw: unknown) {
+  const data = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
+  return planOrder.reduce((result, plan) => {
+    const clean = cleanPlanPrice(data[plan])
+    if (clean) result[plan] = clean
+    return result
+  }, {} as Partial<Record<PlanType, ReturnType<typeof cleanPlanPrice>>>)
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
@@ -68,6 +139,7 @@ export async function POST(request: NextRequest) {
       action?: string
       plan?: string
       paymentProvider?: string
+      priceSettings?: unknown
     }
 
     if (!body.idToken) {
@@ -109,6 +181,41 @@ export async function POST(request: NextRequest) {
       )
 
       return NextResponse.json({ ok: true, ...(await getPaymentSettings(adminDb)) })
+    }
+
+    if (action === 'get_price_settings') {
+      return NextResponse.json(await getPriceSettings(adminDb))
+    }
+
+    if (action === 'set_price_settings') {
+      const bodySettings = body.priceSettings && typeof body.priceSettings === 'object'
+        ? body.priceSettings as Record<PriceContext, unknown>
+        : {} as Partial<Record<PriceContext, unknown>>
+      const gordin = cleanPriceContext(bodySettings.gordin)
+      const internal = cleanPriceContext(bodySettings.internal)
+      const external = cleanPriceContext(bodySettings.external)
+
+      await Promise.all([
+        adminDb.collection('settings').doc('payment-plans').set(
+          {
+            plans: gordin,
+            updatedAt: FieldValue.serverTimestamp(),
+            updatedBy: decodedToken.uid,
+          },
+          { merge: true },
+        ),
+        adminDb.collection('settings').doc('reseller-payment-plans').set(
+          {
+            internal,
+            external,
+            updatedAt: FieldValue.serverTimestamp(),
+            updatedBy: decodedToken.uid,
+          },
+          { merge: true },
+        ),
+      ])
+
+      return NextResponse.json({ ok: true, ...(await getPriceSettings(adminDb)) })
     }
 
     if (!chatId) {
