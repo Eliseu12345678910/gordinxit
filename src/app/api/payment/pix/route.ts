@@ -27,9 +27,15 @@ function cleanId(value: unknown) {
   return clean
 }
 
-function cleanEmail(accountId: string) {
+function cleanEmail(accountId: string, origin: string) {
   const local = accountId.replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 48) || 'cliente'
-  return `${local}@gordinxit.local`
+  try {
+    const host = new URL(origin).hostname.replace(/^www\./, '')
+    const domain = host.includes('.') ? host : 'gordinxit.site'
+    return `${local}@${domain}`
+  } catch {
+    return `${local}@gordinxit.site`
+  }
 }
 
 function jsonRecord(value: unknown): JsonRecord {
@@ -158,7 +164,7 @@ export async function POST(request: NextRequest) {
       accessToken,
       amount,
       description,
-      payerEmail: cleanEmail(accountId),
+      payerEmail: cleanEmail(accountId, origin),
       externalReference,
       notificationUrl,
     })
