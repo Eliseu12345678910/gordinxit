@@ -260,6 +260,10 @@ export async function ensureAnonymousSession() {
 }
 
 export async function checkClientSessionAccess() {
+  const chatId = getStoredChatId()
+  const accountId = getStoredAccountId()
+  if (!chatId || !accountId) return { blocked: false }
+
   const user = await ensureAnonymousSession()
   const idToken = await user.getIdToken()
 
@@ -270,8 +274,8 @@ export async function checkClientSessionAccess() {
     },
     body: JSON.stringify({
       idToken,
-      chatId: getStoredChatId(),
-      accountId: getStoredAccountId(),
+      chatId,
+      accountId,
     }),
   })
 
